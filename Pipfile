@@ -7,6 +7,10 @@ name = "pypi"
 python-telegram-bot = "*"
 
 [dev-packages]
+black = "*"
+
+[scripts]
+start = "python main.py"
 
 [requires]
 python_version = "3.11"
