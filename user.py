@@ -16,7 +16,7 @@ from telegram import (
     User,
 )
 from telegram.constants import ParseMode
-from telegram.ext import CallbackContext, CallbackQueryHandler, CommandHandler, ConversationHandler, MessageHandler
+from telegram.ext import CallbackQueryHandler, CommandHandler, ConversationHandler, MessageHandler
 from telegram.ext.filters import COMMAND, TEXT, ChatType, UpdateType
 
 from config import config
@@ -24,6 +24,7 @@ from db import db, get_user, DbUser
 from filters import ADMIN
 from help import send_help
 from langs import lang_icons, locale, loc
+from typings import AppContext, PendingInitiative
 from util import escape
 
 REG_LANG = "reg_lang"
@@ -45,7 +46,7 @@ lang_keyboard = InlineKeyboardMarkup(
 )
 
 
-async def handle_language(update: Update, context: CallbackContext):
+async def handle_language(update: Update, context: AppContext):
     message = cast(Message, update.effective_message)
     await message.chat.send_message(
         locale["fi"]["choose_lang"],
@@ -55,12 +56,11 @@ async def handle_language(update: Update, context: CallbackContext):
     return CHANGE_LANG
 
 
-async def handle_start(update: Update, context: CallbackContext):
-    user_data = cast(dict, context.user_data)
+async def handle_start(update: Update, context: AppContext):
     message = cast(Message, update.effective_message)
     user = get_user(update)
     if user:
-        user_data["lang"] = user["language"]
+        context.user_data.lang = user["language"]
         await send_help(message.chat, user, context)
         return END
     await message.chat.send_message(
@@ -71,15 +71,14 @@ async def handle_start(update: Update, context: CallbackContext):
     return REG_LANG
 
 
-async def lang_callback(update: Update, context: CallbackContext):
+async def lang_callback(update: Update, context: AppContext):
     callback_query = cast(CallbackQuery, update.callback_query)
-    user_data = cast(dict, context.user_data)
     match callback_query.data:
         case "lang_fi" | "lang_en":
             await callback_query.answer()
             new_lang = callback_query.data.removeprefix("lang_")
             assert new_lang in locale
-            user_data["lang"] = new_lang
+            context.user_data.lang = new_lang
             await callback_query.edit_message_text(
                 loc(context)["lang_set"],
                 parse_mode=ParseMode.HTML,
@@ -100,7 +99,7 @@ async def lang_callback(update: Update, context: CallbackContext):
             await callback_query.answer()
 
 
-async def ask_code(user: User, context: CallbackContext):
+async def ask_code(user: User, context: AppContext):
     await user.send_message(
         loc(context)["enter_code"],
         parse_mode=ParseMode.HTML,
@@ -109,8 +108,7 @@ async def ask_code(user: User, context: CallbackContext):
     return REG_CODE
 
 
-async def save_code(update: Update, context: CallbackContext):
-    user_data = cast(dict, context.user_data)
+async def save_code(update: Update, context: AppContext):
     message = cast(Message, update.effective_message)
     code = cast(str, message.text).strip().upper()
     with db:
@@ -136,20 +134,19 @@ async def save_code(update: Update, context: CallbackContext):
         full_name = f"{tg_user.first_name} {tg_user.last_name}".strip()
         cur.execute(
             "UPDATE users SET tgUserId=?, name=?, language=?, present=1 WHERE id = ?",
-            [tg_user.id, full_name, user_data["lang"], user["id"]],
+            [tg_user.id, full_name, context.user_data.lang, user["id"]],
         )
         await send_help(message.chat, user, context)
     return END
 
 
-def require_setup(func: Callable[[Update, CallbackContext, DbUser], Coroutine]):
+def require_setup(func: Callable[[Update, AppContext, DbUser], Coroutine]):
     @wraps(func)
-    async def handle(update: Update, context: CallbackContext):
-        user_data = cast(dict, context.user_data)
+    async def handle(update: Update, context: AppContext):
         user = get_user(update)
-        if not user_data.get("lang"):
+        if not context.user_data.lang:
             if user:
-                user_data["lang"] = user["language"]
+                context.user_data.lang = user["language"]
             elif update.callback_query:
                 await update.callback_query.answer("Please choose a language with /start.", show_alert=True)
                 return
@@ -166,12 +163,12 @@ def require_setup(func: Callable[[Update, CallbackContext, DbUser], Coroutine]):
 
 
 @require_setup
-async def handle_current(update: Update, context: CallbackContext, user: DbUser):
+async def handle_current(update: Update, context: AppContext, user: DbUser):
     await cast(Message, update.effective_message).reply_text(":)")
     return END
 
 
-def initiative_create_allowed(user: DbUser, context: CallbackContext):
+def initiative_create_allowed(user: DbUser, context: AppContext):
     if user["initiativeBanUntil"] and datetime.fromisoformat(user["initiativeBanUntil"]) > datetime.now():
         return loc(context)["init_banned"]
     existing = db.execute(
@@ -184,7 +181,7 @@ def initiative_create_allowed(user: DbUser, context: CallbackContext):
 
 
 @require_setup
-async def handle_initiative(update: Update, context: CallbackContext, user: DbUser):
+async def handle_initiative(update: Update, context: AppContext, user: DbUser):
     message = cast(Message, update.effective_message)
     reason = initiative_create_allowed(user, context)
     if reason:
@@ -195,9 +192,8 @@ async def handle_initiative(update: Update, context: CallbackContext, user: DbUs
         parse_mode=ParseMode.HTML,
         reply_markup=ForceReply(input_field_placeholder=loc(context)["init_title_placeholder"]),
     )
-    user_data = cast(dict, context.user_data)
-    user_data["init_pending"] = {"id": int(time() * 1000)}
-    user_data["init_edit"] = False
+    context.user_data.init_pending = {"id": int(time() * 1000)}
+    context.user_data.init_edit = False
     return INIT_TITLE
 
 
@@ -208,8 +204,7 @@ def clean_whitespace(s: str):
 
 
 @require_setup
-async def initiative_save_title(update: Update, context: CallbackContext, user: DbUser):
-    user_data = cast(dict, context.user_data)
+async def initiative_save_title(update: Update, context: AppContext, user: DbUser):
     new_title = clean_whitespace(cast(str, cast(Message, update.message).text))
     if not new_title:
         return INIT_TITLE
@@ -220,9 +215,9 @@ async def initiative_save_title(update: Update, context: CallbackContext, user: 
             reply_markup=ForceReply(input_field_placeholder=loc(context)["init_title_placeholder"]),
         )
         return INIT_TITLE
-    user_data["init_pending"]["title"] = new_title
-    if user_data.get("init_edit"):
-        user_data["init_edit"] = False
+    context.user_data.init_pending["title"] = new_title
+    if context.user_data.init_edit:
+        context.user_data.init_edit = False
         return await initiative_checkup(update, context)
     else:
         await cast(Message, update.effective_message).chat.send_message(
@@ -234,8 +229,7 @@ async def initiative_save_title(update: Update, context: CallbackContext, user: 
 
 
 @require_setup
-async def initiative_save_desc(update: Update, context: CallbackContext, user: DbUser):
-    user_data = cast(dict, context.user_data)
+async def initiative_save_desc(update: Update, context: AppContext, user: DbUser):
     new_desc = clean_whitespace(cast(str, cast(Message, update.message).text))
     if not new_desc:
         return INIT_DESC
@@ -246,19 +240,21 @@ async def initiative_save_desc(update: Update, context: CallbackContext, user: D
             reply_markup=ForceReply(input_field_placeholder=loc(context)["init_desc_placeholder"]),
         )
         return INIT_DESC
-    user_data["init_pending"]["desc"] = new_desc
-    user_data["init_edit"] = False
+    context.user_data.init_pending["desc"] = new_desc
+    context.user_data.init_edit = False
     return await initiative_checkup(update, context)
 
 
-async def initiative_checkup(update: Update, context: CallbackContext):
-    user_data = cast(dict, context.user_data)
-    assert all(key in user_data["init_pending"] for key in ("id", "title", "desc"))
-    iid = user_data["init_pending"]["id"]
+async def initiative_checkup(update: Update, context: AppContext):
+    pending = context.user_data.init_pending
+    iid = pending.get("id")
+    title = pending.get("title")
+    desc = pending.get("desc")
+    assert title and desc
     await cast(Chat, update.effective_chat).send_message(
         loc(context)["init_checkup"].format(
-            title=escape(user_data["init_pending"]["title"]),
-            desc=escape(user_data["init_pending"]["desc"]),
+            title=escape(title),
+            desc=escape(desc),
         ),
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(
@@ -274,12 +270,11 @@ async def initiative_checkup(update: Update, context: CallbackContext):
 
 
 @require_setup
-async def initiative_callback(update: Update, context: CallbackContext, user: DbUser):
+async def initiative_callback(update: Update, context: AppContext, user: DbUser):
     callback_query = cast(CallbackQuery, update.callback_query)
-    user_data = cast(dict, context.user_data)
     action, iid = (callback_query.data or "").split(":")
     iid = int(iid)
-    if iid != user_data.get("init_pending", {}).get("id"):
+    if iid != context.user_data.init_pending.get("id"):
         await callback_query.answer()
         await callback_query.edit_message_text(
             loc(context)["init_broken"],
@@ -294,7 +289,7 @@ async def initiative_callback(update: Update, context: CallbackContext, user: Db
                 await callback_query.answer(reason, show_alert=True)
                 return INIT_CHECK
             await callback_query.answer()
-            initiative_create(user, user_data["init_pending"])
+            initiative_create(user, context.user_data.init_pending)
             await callback_query.edit_message_text(
                 loc(context)["init_sent"],
                 reply_markup=None,
@@ -304,7 +299,7 @@ async def initiative_callback(update: Update, context: CallbackContext, user: Db
             return END
         case "init_edit_title":
             await callback_query.answer()
-            user_data["init_edit"] = True
+            context.user_data.init_edit = True
             await callback_query.edit_message_reply_markup(None)
             await callback_query.from_user.send_message(
                 loc(context)["init_editing_title"].format(length=config["initiatives"]["title_max_len"]),
@@ -314,7 +309,7 @@ async def initiative_callback(update: Update, context: CallbackContext, user: Db
             return INIT_TITLE
         case "init_edit_desc":
             await callback_query.answer()
-            user_data["init_edit"] = True
+            context.user_data.init_edit = True
             await callback_query.edit_message_reply_markup(None)
             await callback_query.from_user.send_message(
                 loc(context)["init_editing_desc"].format(length=config["initiatives"]["desc_max_len"]),
@@ -329,14 +324,14 @@ async def initiative_callback(update: Update, context: CallbackContext, user: Db
                 parse_mode=ParseMode.HTML,
                 reply_markup=None,
             )
-            user_data["init_pending"] = {}
+            context.user_data.init_pending = {}
             return END
         case _:
             await callback_query.answer()
             return END
 
 
-def initiative_create(user: DbUser, data: dict):
+def initiative_create(user: DbUser, data: PendingInitiative):
     assert all(key in data for key in ("title", "desc"))
     with db:
         lang_suffix = user["language"].capitalize()
@@ -348,7 +343,7 @@ def initiative_create(user: DbUser, data: dict):
 
 
 @require_setup
-async def initiative_cancel(update: Update, context: CallbackContext, user: DbUser):
+async def initiative_cancel(update: Update, context: AppContext, user: DbUser):
     await cast(Message, update.effective_message).chat.send_message(
         loc(context)["init_cancel"],
         parse_mode=ParseMode.HTML,
@@ -358,19 +353,18 @@ async def initiative_cancel(update: Update, context: CallbackContext, user: DbUs
 
 
 @require_setup
-async def handle_initiatives(update: Update, context: CallbackContext, user: DbUser):
+async def handle_initiatives(update: Update, context: AppContext, user: DbUser):
     await cast(Message, update.effective_message).reply_text(":)")
     return END
 
 
 @require_setup
-async def initiatives_callback(update: Update, context: CallbackContext, user: DbUser):
+async def initiatives_callback(update: Update, context: AppContext, user: DbUser):
     pass
 
 
 @require_setup
-async def handle_inotifications(update: Update, context: CallbackContext, user: DbUser):
-    user_data = cast(dict, context.user_data)
+async def handle_inotifications(update: Update, context: AppContext, user: DbUser):
     new_setting = not user["initiativeNotifs"]
     with db:
         db.execute(
@@ -378,7 +372,7 @@ async def handle_inotifications(update: Update, context: CallbackContext, user: 
             [new_setting, user["id"]],
         )
     await cast(Message, update.effective_message).chat.send_message(
-        locale[user_data["lang"]]["init_notifs_on" if new_setting else "init_notifs_off"],
+        loc(context)["init_notifs_on" if new_setting else "init_notifs_off"],
         parse_mode=ParseMode.HTML,
         reply_markup=ReplyKeyboardRemove(),
     )

@@ -1,29 +1,29 @@
 import pprint
-from typing import cast
 
-from telegram.ext import Application, BaseHandler, ChatMemberHandler, ConversationHandler
-from telegram.ext.filters import UpdateType
+from telegram import Update
+from telegram.ext import Application, BaseHandler, ChatMemberHandler, ConversationHandler, ContextTypes, CallbackContext
 
 from admin import admin_entry, admin_states, handle_chat_member
 from config import config
-from filters import ADMIN
 from user import user_entry, user_states
+from typings import AppContext, BotData, UserData
 
 
 class DumpHandler(BaseHandler):
     def __init__(self):
         super().__init__(self.handle, True)
 
-    async def handle(self, update, _ctx):
-        pprint.pprint(update)
+    async def handle(self, update: Update, _ctx):
+        pprint.pprint(update.to_dict(), width=120)
 
     def check_update(self, _update):
         return True
 
 
 def main():
-    app = Application.builder().token(config["token"]).build()
-    app.add_handler(DumpHandler(), 999)
+    context_types = ContextTypes(context=AppContext, user_data=UserData, bot_data=BotData)
+    app = Application.builder().context_types(context_types).token(config["token"]).build()
+    app.add_handler(DumpHandler(), -999)
     app.add_handler(
         ConversationHandler(
             entry_points=[

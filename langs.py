@@ -1,6 +1,6 @@
 from typing import TypedDict, cast
 
-from telegram.ext import CallbackContext
+from typings import AppContext
 
 lang_icons = {
     "fi": "🇫🇮 FI",
@@ -136,6 +136,7 @@ locale: dict[str, Locale] = {
 }
 
 
-def loc(context: CallbackContext):
-    user_data = cast(dict, context.user_data)
-    return locale[user_data["lang"]]
+def loc(context: AppContext):
+    if context.user_data.lang is None:
+        raise RuntimeError("no lang set for user")
+    return locale[context.user_data.lang]

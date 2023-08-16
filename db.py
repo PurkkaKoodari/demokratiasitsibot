@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from typing import Any, cast, TypedDict
 
@@ -7,6 +8,8 @@ from config import config
 
 db = sqlite3.connect(config["database"])
 db.row_factory = sqlite3.Row
+
+db.set_trace_callback(print)
 
 db.executescript(
     """
@@ -37,9 +40,14 @@ CREATE TABLE IF NOT EXISTS polls (
     textEn TEXT NOT NULL,
     status CHAR(8) NOT NULL DEFAULT 'created',
     type CHAR(8) NOT NULL DEFAULT 'question',
-    targetGroup CHAR(32) DEFAULT 'hallitus',
-    replaceGroup BOOLEAN DEFAULT TRUE,
-    groupEligible BOOLEAN DEFAULT TRUE
+    voterGroup CHAR(32) DEFAULT NULL,
+    sourceGroup CHAR(32) DEFAULT 'ehdokkaat',
+    electedGroup CHAR(32) DEFAULT 'hallitus',
+    perArea BOOLEAN DEFAULT TRUE,
+    replaceElectedGroup BOOLEAN DEFAULT TRUE,
+    electedGroupEligible BOOLEAN DEFAULT TRUE,
+    electedGroupVoting BOOLEAN DEFAULT TRUE,
+    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS options (
     id INTEGER PRIMARY KEY,
@@ -75,6 +83,15 @@ CREATE TABLE IF NOT EXISTS seconds (
     initiativeId INTEGER NOT NULL REFERENCES initiatives (id),
     PRIMARY KEY (userId, initiativeId)
 );
+CREATE TABLE IF NOT EXISTS sentMessages (
+    chatId INTEGER NOT NULL,
+    messageId INTEGER NOT NULL,
+    pollId INTEGER DEFAULT NULL REFERENCES polls (id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    initiativeId INTEGER DEFAULT NULL REFERENCES initiatives (id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    isAdmin BOOLEAN NOT NULL,
+    status CHAR(8) NOT NULL,
+    PRIMARY KEY (chatId, messageId)
+);
 """
 )
 
@@ -94,12 +111,12 @@ class DbUser(TypedDict):
 
 def get_kv(key: str, default: Any):
     row = db.execute("SELECT value FROM kv WHERE key = ?", [key]).fetchone()
-    return row[0] if row else default
+    return json.loads(row[0]) if row else default
 
 
 def set_kv(key: str, value: Any):
     with db:
-        db.execute("REPLACE INTO kv (key, value) VALUES (?, ?)", [key, str(value)])
+        db.execute("REPLACE INTO kv (key, value) VALUES (?, ?)", [key, json.dumps(value)])
 
 
 def get_user(update: Update) -> DbUser | None:
