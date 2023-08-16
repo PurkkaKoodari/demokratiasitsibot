@@ -131,10 +131,9 @@ async def save_code(update: Update, context: AppContext):
             )
             return REG_CODE
         tg_user = cast(User, message.from_user)
-        full_name = f"{tg_user.first_name} {tg_user.last_name}".strip()
         cur.execute(
-            "UPDATE users SET tgUserId=?, name=?, language=?, present=1 WHERE id = ?",
-            [tg_user.id, full_name, context.user_data.lang, user["id"]],
+            "UPDATE users SET tgUserId=?, tgUsername=?, tgDisplayName=?, language=?, present=1 WHERE id = ?",
+            [tg_user.id, tg_user.username, tg_user.full_name.strip(), context.user_data.lang, user["id"]],
         )
         await send_help(message.chat, user, context)
     return END
@@ -360,7 +359,7 @@ async def handle_initiatives(update: Update, context: AppContext, user: DbUser):
 
 @require_setup
 async def initiatives_callback(update: Update, context: AppContext, user: DbUser):
-    pass
+    await cast(CallbackQuery, update.callback_query).answer(":)")
 
 
 @require_setup

@@ -13,6 +13,8 @@ db.set_trace_callback(print)
 
 db.executescript(
     """
+PRAGMA foreign_keys = TRUE;
+
 CREATE TABLE IF NOT EXISTS kv (
     key CHAR(32) PRIMARY KEY,
     value TEXT NOT NULL
@@ -21,6 +23,8 @@ CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
     passcode CHAR(8) UNIQUE NOT NULL,
     tgUserId INTEGER DEFAULT NULL,
+    tgUsername VARCHAR(255) DEFAULT NULL,
+    tgDisplayName VARCHAR(255) DEFAULT NULL,
     name VARCHAR(255) NOT NULL,
     area VARCHAR(32) DEFAULT NULL,
     candidateNumber INTEGER DEFAULT NULL,
@@ -94,6 +98,7 @@ CREATE TABLE IF NOT EXISTS sentMessages (
 );
 """
 )
+db.commit()
 
 
 class DbUser(TypedDict):
