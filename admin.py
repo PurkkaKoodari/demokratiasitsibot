@@ -10,6 +10,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    MessageEntity,
     ReplyKeyboardRemove,
     Update,
     User,
@@ -857,7 +858,7 @@ async def group_remove(update: Update, context: AppContext):
     message = cast(Message, update.effective_message)
     if not context.args or len(context.args) < 2:
         await message.reply_text(
-            "<b>Usage:</b> <code>`/group_remove group_name uid...</code>", parse_mode=ParseMode.HTML
+            "<b>Usage:</b> <code>/group_remove group_name uid...</code>", parse_mode=ParseMode.HTML
         )
         return END
     group, uids = await group_manip_args(message, context.args)
@@ -876,6 +877,37 @@ async def group_remove(update: Update, context: AppContext):
     return END
 
 
+async def broadcast(update: Update, context: AppContext):
+    message = cast(Message, update.effective_message)
+    text = cast(str, message.text)
+    if " " not in text:
+        await message.reply_text(
+            "<b>Usage:</b> <code>/broadcast message...</code>\n\n"
+            "Everything after /broadcast, including formatting, will be sent to users - be careful!",
+            parse_mode=ParseMode.HTML,
+        )
+        return END
+    utf32_offset = text.index(" ")
+    utf16_offset = len(text[: utf32_offset + 1].encode("utf-16-le")) // 2
+    rest = text.encode("utf-16-le")[utf16_offset * 2 :].decode("utf-16-le")
+    shifted_entities: list[MessageEntity] = []
+    for entity in message.entities:
+        if entity.offset + entity.length <= utf16_offset:
+            continue
+        if entity.offset < utf16_offset:
+            shift = utf16_offset - entity.offset
+            shifted_entities.append(MessageEntity(**{**entity.to_dict(), "offset": 0, "length": entity.length - shift}))
+        else:
+            shifted_entities.append(MessageEntity(**{**entity.to_dict(), "offset": entity.offset - utf16_offset}))
+    # TODO: actually broadcast
+    # TODO: confirmation
+    await message.reply_text(rest, entities=shifted_entities)
+    if len(rest) > 1000:
+        rest = rest[:1000] + "..."
+    await admin_log(f"broadcast the message:\n\n{escape(rest)}", update, context)
+    return END
+
+
 admin_entry = [
     CommandHandler("start", handle_admin_start, ADMIN & ~UpdateType.EDITED),
     CommandHandler("grant", handle_grant, ADMIN & ~UpdateType.EDITED),
@@ -890,6 +922,7 @@ admin_entry = [
     CommandHandler("group_view", group_view, ADMIN & ~UpdateType.EDITED),
     CommandHandler("group_add", group_add, ADMIN & ~UpdateType.EDITED),
     CommandHandler("group_remove", group_remove, ADMIN & ~UpdateType.EDITED),
+    CommandHandler("broadcast", broadcast, ADMIN & ~UpdateType.EDITED),
     AdminCallbackQueryHandler(newpoll_callback, pattern=r"^np_\w+:\d+$"),
     AdminCallbackQueryHandler(poll_chooser, pattern=r"^polls:\d+$"),
 ]
