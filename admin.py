@@ -77,6 +77,7 @@ Welcome! Things you can do in admin-approved chats:
 /broadcast - broadcast a message to all participants
 /admin_log - show log of admin actions here
 /initiative_log - handle initiatives here
+/initiatitive_alert [number...] - alert when initiatives reach signature counts
 /polls - manage existing polls (only in private chat)
 /newpoll - create a poll (only in private chat)
 /newelection - create an election (only in private chat)
@@ -85,6 +86,7 @@ Welcome! Things you can do in admin-approved chats:
 /group_view [group] - view members of a group
 /group_add [group] [uid...] - add people to a group
 /group_remove [group] [uid...] - remove people from a group
+/mark_absent [uid...] - mark people as absent from the sitsit
 /start_user - register as a sitsi participant (only in private chat)"""
     )
     return await handle_grant(update, context, True)
@@ -764,6 +766,30 @@ async def unassign_code_start(update: Update, context: AppContext):
     return END
 
 
+async def group_arg(message: Message, arg: str):
+    group = arg.strip().lower()
+    if not re.match(GROUP_REGEX, group):
+        await message.reply_text(
+            "Invalid group name! Group names must be 1-32 of <code>a-z 0-9 _ -</code>.", parse_mode=ParseMode.HTML
+        )
+        return None
+    elif group == "everyone":
+        await message.reply_text("Cannot use everyone as group name.", parse_mode=ParseMode.HTML)
+        return None
+    return group
+
+
+async def uids_args(message, args: list[str]):
+    try:
+        uids = [int(uid) for uid in args]
+    except Exception:
+        await message.reply_text(
+            "Invalid user IDs. User IDs should be numbers in the participant sheet.", parse_mode=ParseMode.HTML
+        )
+        return None
+    return uids
+
+
 async def group_list(update: Update, context: AppContext):
     message = cast(Message, update.effective_message)
     groups = db.execute("SELECT `group`, COUNT(userId) AS `count` FROM groupMembers GROUP BY `group`").fetchall()
@@ -782,49 +808,27 @@ async def group_view(update: Update, context: AppContext):
     if not context.args:
         await message.reply_text("<b>Usage:</b> <code>/group_view group_name</code>", parse_mode=ParseMode.HTML)
         return END
-    group = context.args[0]
-    if not re.match(GROUP_REGEX, group):
-        await message.reply_text(
-            "Invalid group name! Group names must be 1-32 of <code>a-z 0-9 _ -</code>.", parse_mode=ParseMode.HTML
-        )
-        return END
-    members = db.execute(
-        """
-        SELECT users.*
-        FROM groupMembers
-        INNER JOIN users ON users.id = groupMembers.userId
-        WHERE groupMembers.`group` = ?
-        """,
-        [group],
-    ).fetchall()
-    if not members:
-        await message.reply_text(f"No members currently in <code>{escape(group)}</code>.", parse_mode=ParseMode.HTML)
-    else:
-        await message.reply_text(
-            "\n".join(f"ID <code>{row['id']}</code> {escape(row['name'])}" for row in members),
-            parse_mode=ParseMode.HTML,
-        )
+    group = await group_arg(message, context.args[0])
+    if group:
+        members = db.execute(
+            """
+            SELECT users.*
+            FROM groupMembers
+            INNER JOIN users ON users.id = groupMembers.userId
+            WHERE groupMembers.`group` = ?
+            """,
+            [group],
+        ).fetchall()
+        if not members:
+            await message.reply_text(
+                f"No members currently in <code>{escape(group)}</code>.", parse_mode=ParseMode.HTML
+            )
+        else:
+            await message.reply_text(
+                "\n".join(f"ID <code>{row['id']}</code> {escape(row['name'])}" for row in members),
+                parse_mode=ParseMode.HTML,
+            )
     return END
-
-
-async def group_manip_args(message: Message, args: list[str]):
-    group = args[0].strip().lower()
-    if not re.match(GROUP_REGEX, group):
-        await message.reply_text(
-            "Invalid group name! Group names must be 1-32 of <code>a-z 0-9 _ -</code>.", parse_mode=ParseMode.HTML
-        )
-        return None, None
-    elif group == "everyone":
-        await message.reply_text("Cannot use everyone as group name.", parse_mode=ParseMode.HTML)
-        return None, None
-    try:
-        uids = [int(uid) for uid in args[1:]]
-    except Exception:
-        await message.reply_text(
-            "Invalid user IDs. User IDs should be numbers in the participant sheet.", parse_mode=ParseMode.HTML
-        )
-        return None, None
-    return group, uids
 
 
 async def group_add(update: Update, context: AppContext):
@@ -832,7 +836,8 @@ async def group_add(update: Update, context: AppContext):
     if not context.args or len(context.args) < 2:
         await message.reply_text("<b>Usage:</b> <code>/group_add group_name uid...</code>", parse_mode=ParseMode.HTML)
         return END
-    group, uids = await group_manip_args(message, context.args)
+    group = await group_arg(message, context.args[0])
+    uids = await uids_args(message, context.args[1:])
     if group and uids:
         try:
             with db:
@@ -862,7 +867,8 @@ async def group_remove(update: Update, context: AppContext):
             "<b>Usage:</b> <code>/group_remove group_name uid...</code>", parse_mode=ParseMode.HTML
         )
         return END
-    group, uids = await group_manip_args(message, context.args)
+    group = await group_arg(message, context.args[0])
+    uids = await uids_args(message, context.args[1:])
     if group and uids:
         with db:
             cur = db.cursor()
@@ -875,6 +881,25 @@ async def group_remove(update: Update, context: AppContext):
                 f"Removed {changed} users from <code>{escape(group)}</code>.", parse_mode=ParseMode.HTML
             )
             await admin_log(f"removed {changed} users from <code>{escape(group)}</code>.", update, context)
+    return END
+
+
+async def mark_absent(update: Update, context: AppContext):
+    message = cast(Message, update.effective_message)
+    if not context.args or not context.args:
+        await message.reply_text("<b>Usage:</b> <code>/mark_absent uid...</code>", parse_mode=ParseMode.HTML)
+        return END
+    uids = await uids_args(message, context.args)
+    if uids:
+        with db:
+            cur = db.cursor()
+            cur.execute(
+                f"UPDATE users SET present=0 WHERE present = 1 AND id IN ({', '.join('?' * len(uids))})",
+                uids,
+            )
+            changed = cur.rowcount
+            await message.reply_text(f"Marked {changed} users as absent.", parse_mode=ParseMode.HTML)
+            await admin_log(f"marked {changed} users as absent.", update, context)
     return END
 
 
@@ -952,6 +977,30 @@ async def broadcast_callback(update: Update, context: AppContext):
     return END
 
 
+async def set_initiative_alert(update: Update, context: AppContext):
+    message = cast(Message, update.effective_message)
+    if not context.args or not context.args:
+        await message.reply_text("<b>Usage:</b> <code>/initiative_alert number...</code>", parse_mode=ParseMode.HTML)
+        return END
+    try:
+        alerts = sorted(set(int(arg) for arg in context.args))
+        if len(alerts) > 10 or not all(1 <= alert <= 200 for alert in alerts):
+            raise ValueError
+    except ValueError:
+        await message.reply_text(
+            "Invalid numbers. Initiative alert limits must be 1-200 and there must be up to 10 of them.",
+            parse_mode=ParseMode.HTML,
+        )
+        return END
+    set_kv("initiative_alerts", alerts)
+    await message.reply_text(
+        f"Initiative alert limits set to {', '.join(map(str, alerts))}. Initiatives already over limits will not be alerted.",
+        parse_mode=ParseMode.HTML,
+    )
+    await admin_log(f"set the initiative alert limits to {', '.join(map(str, alerts))}.", update, context)
+    return END
+
+
 admin_entry = [
     CommandHandler("start", handle_admin_start, ADMIN & ~UpdateType.EDITED),
     CommandHandler("grant", handle_grant, ADMIN & ~UpdateType.EDITED),
@@ -966,7 +1015,9 @@ admin_entry = [
     CommandHandler("group_view", group_view, ADMIN & ~UpdateType.EDITED),
     CommandHandler("group_add", group_add, ADMIN & ~UpdateType.EDITED),
     CommandHandler("group_remove", group_remove, ADMIN & ~UpdateType.EDITED),
+    CommandHandler("mark_absent", mark_absent, ADMIN & ~UpdateType.EDITED),
     CommandHandler("broadcast", broadcast, ADMIN & ~UpdateType.EDITED),
+    CommandHandler("initiative_alert", set_initiative_alert, ADMIN & ~UpdateType.EDITED),
     AdminCallbackQueryHandler(newpoll_callback, pattern=r"^np_\w+:\d+$"),
     AdminCallbackQueryHandler(poll_chooser, pattern=r"^polls:\d+$"),
     AdminCallbackQueryHandler(broadcast_callback, pattern=r"^br_\w+:\d+$"),

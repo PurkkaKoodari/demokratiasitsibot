@@ -33,7 +33,7 @@ class PendingBroadcast:
 
 @dataclass
 class BotData:
-    init_handlers: dict[int, int] = field(default_factory=dict)
+    init_handlers: dict[int, tuple[int, int]] = field(default_factory=dict)
 
 
 @dataclass

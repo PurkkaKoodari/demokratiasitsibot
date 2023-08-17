@@ -62,6 +62,7 @@ async def handle_start(update: Update, context: AppContext):
     if user:
         context.user_data.lang = user["language"]
         await send_help(message.chat, user, context)
+        await mark_not_absent(update, context, user)
         return END
     await message.chat.send_message(
         locale["fi"]["welcome"],
@@ -123,14 +124,16 @@ async def save_code(update: Update, context: AppContext):
                 reply_markup=ForceReply(input_field_placeholder=loc(context)["code_placeholder"]),
             )
             return REG_CODE
-        if user["tgUserId"] is not None:
+        tg_user = cast(User, message.from_user)
+        if user["tgUserId"] is not None or (
+            user["tgUsername"] is not None and user["tgUsername"].lower() != (tg_user.username or "").lower()
+        ):
             await message.chat.send_message(
                 loc(context)["used_code"],
                 parse_mode=ParseMode.HTML,
                 reply_markup=ForceReply(input_field_placeholder=loc(context)["code_placeholder"]),
             )
             return REG_CODE
-        tg_user = cast(User, message.from_user)
         cur.execute(
             "UPDATE users SET tgUserId=?, tgUsername=?, tgDisplayName=?, language=?, present=1 WHERE id = ?",
             [tg_user.id, tg_user.username, tg_user.full_name.strip(), context.user_data.lang, user["id"]],
@@ -156,9 +159,31 @@ def require_setup(func: Callable[[Update, AppContext, DbUser], Coroutine]):
                 await update.callback_query.answer("Please register with /start.", show_alert=True)
                 return
             return await ask_code(cast(User, update.effective_user), context)
+        await mark_not_absent(update, context, user)
         return await func(update, context, user)
 
     return handle
+
+
+@require_setup
+async def handle_absent(update: Update, context: AppContext, user: DbUser):
+    with db:
+        db.execute(
+            "UPDATE users SET present=0 WHERE id = ?",
+            [user["id"]],
+        )
+    await cast(User, update.effective_user).send_message(loc(context)["absent"])
+    return END
+
+
+async def mark_not_absent(update: Update, context: AppContext, user: DbUser):
+    if not user["present"]:
+        with db:
+            db.execute(
+                "UPDATE users SET present=1 WHERE id = ?",
+                [user["id"]],
+            )
+        await cast(User, update.effective_user).send_message(loc(context)["unabsent"])
 
 
 @require_setup
@@ -383,6 +408,7 @@ user_entry = [
     CommandHandler("start_user", handle_start, ADMIN & ChatType.PRIVATE & ~UpdateType.EDITED),
     CommandHandler("help", handle_start, ChatType.PRIVATE & ~UpdateType.EDITED),
     CommandHandler("language", handle_language, ChatType.PRIVATE & ~UpdateType.EDITED),
+    CommandHandler("absent", handle_absent, ChatType.PRIVATE & ~UpdateType.EDITED),
     CommandHandler("current", handle_current, ChatType.PRIVATE & ~UpdateType.EDITED),
     CommandHandler("initiative", handle_initiative, ChatType.PRIVATE & ~UpdateType.EDITED),
     CommandHandler("initiatives", handle_initiatives, ChatType.PRIVATE & ~UpdateType.EDITED),

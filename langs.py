@@ -18,6 +18,8 @@ class Locale(TypedDict):
     used_code: str
     area: str
     help: str
+    absent: str
+    unabsent: str
     poll_confirm: str
     election_confirm: str
     poll_voted: str
@@ -60,7 +62,9 @@ locale: dict[str, Locale] = {
         "invalid_code": "Koodi on virheellinen. Tarkista vielä oikeinkirjoitus ja pyydä tarvittaessa apua sitsien henkilökunnalta.",
         "used_code": "Koodia on jo käytetty toisella Telegram-käyttäjällä! Pyydä apua sitsien henkilökunnalta, jos haluat siirtää koodin tunnuksellesi.",
         "area": "Paikkasi on <b>pöydässä {area}</b>. Voit valita paikkasi tässä pöydässä vapaasti.",
-        "help": "Tervetuloa! {area}\n\nSitsien aikana äänestykset lähetetään sinulle tämän Telegram-botin kautta. Voit tarkistaa nykyisen äänestyksen komennolla /current.\n\nSitsien aikana voit tehdä kansalaisaloitteita komennolla /initiative. Voit lukea kansalaisaloitteita komennolla /initiatives.\n\n{initnotif}",
+        "help": "Tervetuloa! {area}\n\nSitsien aikana äänestykset lähetetään sinulle tämän Telegram-botin kautta. Voit tarkistaa nykyisen äänestyksen komennolla /current.\n\nSitsien aikana voit tehdä kansalaisaloitteita komennolla /initiative. Voit lukea kansalaisaloitteita komennolla /initiatives.\n\n{initnotif}\n\nJos poistut sitseiltä, kirjoita komento /absent.",
+        "absent": "Sinut on merkitty poissaolevaksi. Voit palata sitseille lähettämällä minkä tahansa komennon.",
+        "unabsent": "Sinut on merkitty paikallaolevaksi.",
         "poll_confirm": "{title}\n\nHaluatko varmasti äänestää vaihtoehtoa {option}?",
         "election_confirm": "{title}\n\nHaluatko varmasti äänestää ehdokasta {option}?",
         "poll_voted": "{title}\n\nÄänestit vaihtoehtoa {option}.",
@@ -101,7 +105,9 @@ locale: dict[str, Locale] = {
         "code_placeholder": "Code",
         "used_code": "The code you entered has already been used for another Telegram user! Please ask for help from sitsit staff to transfer the code to your account.",
         "area": "Your seat is in <b>table {area}</b>. You may freely choose a seat within the table.",
-        "help": "Welcome! {area}\n\nDuring the sitsit, polls will be sent to you via this Telegram bot. You can check the current poll with the command /current.\n\nDuring the sitsit, you can create citizen's initiatives with the command /initiative. You can read existing initiatives with the command /initiatives.\n\n{initnotif}",
+        "help": "Welcome! {area}\n\nDuring the sitsit, polls will be sent to you via this Telegram bot. You can check the current poll with the command /current.\n\nDuring the sitsit, you can create citizen's initiatives with the command /initiative. You can read existing initiatives with the command /initiatives.\n\n{initnotif}\n\nIf you leave the sitsit, send the command /absent.",
+        "absent": "You have been marked as absent. Send any command to return to the sitsit.",
+        "unabsent": "You are no longer absent.",
         "poll_confirm": "{title}\n\nAre you sure you want to vote for {option}?",
         "election_confirm": "{title}\n\nAre you sure you want to vote for {option}?",
         "poll_voted": "{title}\n\nYou voted for {option}.",
