@@ -46,11 +46,7 @@ CREATE TABLE IF NOT EXISTS polls (
     type CHAR(8) NOT NULL DEFAULT 'question',
     voterGroup CHAR(32) DEFAULT NULL,
     sourceGroup CHAR(32) DEFAULT 'ehdokkaat',
-    electedGroup CHAR(32) DEFAULT 'hallitus',
     perArea BOOLEAN DEFAULT TRUE,
-    replaceElectedGroup BOOLEAN DEFAULT TRUE,
-    electedGroupEligible BOOLEAN DEFAULT TRUE,
-    electedGroupVoting BOOLEAN DEFAULT TRUE,
     updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS options (

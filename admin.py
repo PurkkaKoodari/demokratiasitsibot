@@ -255,23 +255,18 @@ async def newpoll_save_options(update: Update, context: AppContext):
             return await newpoll_ask_options(update, context, other_lang)
 
 
-async def newpoll_ask_group(update: Update, context: AppContext, group: str, complain=None):
+async def newpoll_ask_group(update: Update, context: AppContext, group: str, complain=False):
     match group:
         case "voterGroup":
             title = "voter group"
             desc = "This group of users will see the poll and can vote. Send <code>everyone</code> for everyone."
         case "sourceGroup":
             title = "candidate group"
-            desc = "This group of users will be candidates for the election."
-        case "electedGroup":
-            title = "elected group"
-            desc = "The elected candidates will be added to this group, optionally replacing all existing members."
+            desc = "This group of users will be candidates for the election. Send <code>everyone</code> for everyone."
         case _:
             raise AssertionError("bad group")
     prefix = ""
-    if complain == "everyone":
-        prefix = f"<b>Cannot use everyone as {title}!</b>\n\n"
-    elif complain:
+    if complain:
         prefix = "<b>Invalid group name!</b> Group names must be 1-32 of <code>a-z 0-9 _ -</code>.\n\n"
     await update_menu(update, f"{prefix}Enter the new {title} name (or /cancel).\n\n{desc}", reply_markup=ForceReply())
     context.user_data.poll_group = group
@@ -282,17 +277,14 @@ async def newpoll_save_group(update: Update, context: AppContext):
     key = cast(str, context.user_data.poll_group)
     new_group = cast(str, cast(Message, update.message).text).strip().lower()
     if not re.match(GROUP_REGEX, new_group):
-        return await newpoll_ask_group(update, context, key, "")
+        return await newpoll_ask_group(update, context, key, True)
     if not new_group or new_group == "everyone":
-        # can't put NULL into sourceGroup or electedGroup
-        if key != "voterGroup":
-            return await newpoll_ask_group(update, context, key, True)
         new_group = None
     pid = context.user_data.poll_edit
     pending = context.user_data.poll_pending
     # always editing
     assert pid is not None
-    assert key in ("voterGroup", "sourceGroup", "electedGroup")
+    assert key in ("voterGroup", "sourceGroup")
     cast(dict, pending)[key] = new_group
     return await newpoll_main_menu(update, context, pid)
 
@@ -336,9 +328,7 @@ def newpoll_commit(pid: int, is_election: bool, pending: PendingPoll):
         values = []
         field_names = ["textFi", "textEn", "perArea", "voterGroup"]
         if is_election:
-            field_names.extend(
-                ["sourceGroup", "electedGroup", "replaceElectedGroup", "electedGroupEligible", "electedGroupVoting"]
-            )
+            field_names.append("sourceGroup")
         for field in field_names:
             if field in pending:
                 fields.append(f"{field}=?")
@@ -391,12 +381,8 @@ def newpoll_menu_text(poll, top=None, bottom=None, pending: PendingPoll = {}):
     text += f"\nVoting: "
     text += f"<code>{escape(merged['voterGroup'])}</code>" if merged["voterGroup"] else "<b>everyone</b>"
     if is_election:
-        elected_group = merged["electedGroup"]
         text += f"\nCandidates: "
         text += f"<code>{escape(merged['sourceGroup'])}</code>" if merged["sourceGroup"] else "<b>everyone</b>"
-        text += f"\n{'Elected <b>replace members of</b>' if merged['replaceElectedGroup'] else 'Elected <b>added to</b>'}: <code>{escape(elected_group)}</code>"
-        text += f"\nCurrent <code>{escape(elected_group)}</code> eligible: <b>{'yes' if merged['electedGroupEligible'] else 'no'}</b>"
-        text += f"\nCurrent <code>{escape(elected_group)}</code> can vote: <b>{'yes' if merged['electedGroupVoting'] else 'no'}</b>"
     if top:
         text = f"{top}\n\n{text}"
     if bottom:
@@ -459,30 +445,12 @@ async def newpoll_callback(update: Update, context: AppContext):
             await callback_query.answer()
             return await newpoll_ask_options(update, context, "en")
 
-        case "np_edit_sg" | "np_edit_eg" | "np_edit_reg" | "np_edit_ege" | "np_edit_egv" if not is_election:
+        case "np_edit_sg" if not is_election:
             await callback_query.answer("Can't edit options on poll!")
             return await newpoll_main_menu(update, context, pid, poll)
         case "np_edit_sg":
             await callback_query.answer()
             return await newpoll_ask_group(update, context, "sourceGroup")
-        case "np_edit_eg":
-            await callback_query.answer()
-            return await newpoll_ask_group(update, context, "electedGroup")
-        case "np_edit_reg":
-            await callback_query.answer()
-            context.user_data.poll_pending["replaceElectedGroup"] = not merged["replaceElectedGroup"]
-            poll = {**poll, "replaceElectedGroup": not merged["replaceElectedGroup"]}
-            return await newpoll_main_menu(update, context, pid, poll)
-        case "np_edit_ege":
-            await callback_query.answer()
-            context.user_data.poll_pending["electedGroupEligible"] = not merged["electedGroupEligible"]
-            poll = {**poll, "electedGroupEligible": not merged["electedGroupEligible"]}
-            return await newpoll_main_menu(update, context, pid, poll)
-        case "np_edit_egv":
-            await callback_query.answer()
-            context.user_data.poll_pending["electedGroupVoting"] = not merged["electedGroupVoting"]
-            poll = {**poll, "electedGroupVoting": not merged["electedGroupVoting"]}
-            return await newpoll_main_menu(update, context, pid, poll)
 
         case "np_edit":
             await callback_query.answer()
@@ -598,23 +566,7 @@ async def newpoll_edit_menu(update: Update, context: AppContext, pid: int, poll:
                     InlineKeyboardButton("Voter group", callback_data=f"np_edit_vg:{pid}"),
                     InlineKeyboardButton("Per-area", callback_data=f"np_edit_pa:{pid}"),
                 ],
-                *(
-                    (
-                        [
-                            InlineKeyboardButton("Cand. group", callback_data=f"np_edit_sg:{pid}"),
-                            InlineKeyboardButton("Elected group", callback_data=f"np_edit_eg:{pid}"),
-                        ],
-                        [
-                            InlineKeyboardButton("Replace elected group", callback_data=f"np_edit_reg:{pid}"),
-                        ],
-                        [
-                            InlineKeyboardButton("Curr. eligible", callback_data=f"np_edit_ege:{pid}"),
-                            InlineKeyboardButton("Curr. voting", callback_data=f"np_edit_egv:{pid}"),
-                        ],
-                    )
-                    if is_election
-                    else ()
-                ),
+                *(([InlineKeyboardButton("Cand. group", callback_data=f"np_edit_sg:{pid}")],) if is_election else ()),
                 [InlineKeyboardButton("Discard changes", callback_data=f"np_revert:{pid}")]
                 if pending
                 else [InlineKeyboardButton("Cancel", callback_data=f"np_menu:{pid}")],
