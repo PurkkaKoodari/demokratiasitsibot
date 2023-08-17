@@ -1,5 +1,6 @@
 import re
 from sqlite3 import IntegrityError
+from time import time
 from typing import Any, cast
 
 from telegram import (
@@ -23,7 +24,7 @@ from config import config
 from db import db, get_kv, set_kv
 from filters import ADMIN, CONFIG_ADMIN, db_admins, AdminCallbackQueryHandler, config_admins, banned_admins
 from langs import lang_icons
-from typings import AppContext, PendingPoll
+from typings import AppContext, PendingPoll, PendingBroadcast
 from util import escape, user_link
 
 NP_QUESTION = "np_question"
@@ -890,21 +891,64 @@ async def broadcast(update: Update, context: AppContext):
     utf32_offset = text.index(" ")
     utf16_offset = len(text[: utf32_offset + 1].encode("utf-16-le")) // 2
     rest = text.encode("utf-16-le")[utf16_offset * 2 :].decode("utf-16-le")
-    shifted_entities: list[MessageEntity] = []
+    shifted_entities: list[dict] = []
     for entity in message.entities:
         if entity.offset + entity.length <= utf16_offset:
             continue
         if entity.offset < utf16_offset:
             shift = utf16_offset - entity.offset
-            shifted_entities.append(MessageEntity(**{**entity.to_dict(), "offset": 0, "length": entity.length - shift}))
+            shifted_entities.append({**entity.to_dict(), "offset": 0, "length": entity.length - shift})
         else:
-            shifted_entities.append(MessageEntity(**{**entity.to_dict(), "offset": entity.offset - utf16_offset}))
-    # TODO: actually broadcast
-    # TODO: confirmation
-    await message.reply_text(rest, entities=shifted_entities)
-    if len(rest) > 1000:
-        rest = rest[:1000] + "..."
-    await admin_log(f"broadcast the message:\n\n{escape(rest)}", update, context)
+            shifted_entities.append({**entity.to_dict(), "offset": entity.offset - utf16_offset})
+
+    bid = str(int(time() * 1000))
+    context.user_data.broadcast_pending = PendingBroadcast(bid, rest, shifted_entities)
+
+    prefix = "Are you sure you want to broadcast this message to ALL USERS?"
+    reshifted_entities = [
+        MessageEntity(type=MessageEntity.BOLD, offset=0, length=len(prefix)),
+        *[MessageEntity(**{**entity, "offset": entity["offset"] + len(prefix) + 2}) for entity in shifted_entities],
+    ]
+    await message.reply_text(
+        f"{prefix}\n\n{rest}",
+        entities=reshifted_entities,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("Send it!", callback_data=f"br_send:{bid}")],
+                [InlineKeyboardButton("Cancel", callback_data=f"br_cancel:{bid}")],
+            ]
+        ),
+    )
+    return END
+
+
+async def broadcast_callback(update: Update, context: AppContext):
+    callback_query = cast(CallbackQuery, update.callback_query)
+    action, bid = (callback_query.data or "").split(":")
+    await callback_query.answer()
+
+    if not context.user_data.broadcast_pending or context.user_data.broadcast_pending.id != bid:
+        await callback_query.edit_message_text("Broadcast missing from memory, try again.", reply_markup=None)
+        context.user_data.broadcast_pending = None
+        return END
+
+    msg = context.user_data.broadcast_pending
+    context.user_data.broadcast_pending = None
+
+    if action == "br_send":
+        entities = [MessageEntity(**d) for d in msg.entities]
+        # TODO: actually broadcast
+        await context.bot.send_message(callback_query.from_user.id, msg.text, entities=entities)
+        await callback_query.edit_message_text("Broadcast sent.", reply_markup=None)
+
+        clean_text = msg.text
+        if len(clean_text) > 1000:
+            clean_text = clean_text[:1000] + "..."
+        await admin_log(f"broadcast the message:\n\n{escape(clean_text)}", update, context)
+        bid = int(bid)
+    else:
+        await callback_query.edit_message_text("Broadcast cancelled.", reply_markup=None)
+
     return END
 
 
@@ -925,6 +969,7 @@ admin_entry = [
     CommandHandler("broadcast", broadcast, ADMIN & ~UpdateType.EDITED),
     AdminCallbackQueryHandler(newpoll_callback, pattern=r"^np_\w+:\d+$"),
     AdminCallbackQueryHandler(poll_chooser, pattern=r"^polls:\d+$"),
+    AdminCallbackQueryHandler(broadcast_callback, pattern=r"^br_\w+:\d+$"),
 ]
 
 admin_states = {

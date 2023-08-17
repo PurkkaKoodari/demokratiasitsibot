@@ -25,6 +25,13 @@ class PendingInitiative(TypedDict, total=False):
 
 
 @dataclass
+class PendingBroadcast:
+    id: str
+    text: str
+    entities: list[dict]
+
+
+@dataclass
 class BotData:
     init_handlers: dict[int, int] = field(default_factory=dict)
 
@@ -47,6 +54,7 @@ class UserData:
     """Current language being edited in poll"""
     poll_group: str | None = None
     """Current group key being edited in poll"""
+    broadcast_pending: PendingBroadcast | None = None
 
 
 class AppContext(CallbackContext[ExtBot, UserData, None, BotData]):
