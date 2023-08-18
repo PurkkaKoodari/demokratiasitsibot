@@ -544,7 +544,7 @@ def iadm_menu_text(init: DbInitiative, top="", bottom="", new=False):
         case InitiativeState.shitpost:
             bottom = "<b>This initiative was marked as a shitpost.</b>"
         case InitiativeState.closed:
-            bottom = "<b>This initiative has been closed for signatures.</b>\n<b>Signatures: {init['signCount']}</b>"
+            bottom = f"<b>This initiative has been closed for signatures.</b>\n<b>Signatures: {init['signCount']}</b>"
     if bottom:
         parts.append(bottom)
     return "\n\n".join(parts)
@@ -763,6 +763,19 @@ async def iadm_callback(update: Update, context: AppContext):
             return await iadm_main_menu(update, init)
         case "iadm_close":
             await callback_query.answer()
+            await update_menu(
+                update,
+                iadm_menu_text(
+                    init,
+                    bottom="<b>Area you sure you want to CLOSE this initiative from voting?</b> (Reopening is not supported)",
+                ),
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [InlineKeyboardButton("Yes, close!", callback_data=f"iadm_close2:{iid}")],
+                        [InlineKeyboardButton("Cancel", callback_data=f"iadm_menu:{iid}")],
+                    ]
+                ),
+            )
             return END
         case "iadm_close2":
             await callback_query.answer("Signatures closed.")
