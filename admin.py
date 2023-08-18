@@ -20,6 +20,7 @@ from telegram import (
     User,
 )
 from telegram.constants import ChatMemberStatus, ParseMode, ChatType as ChatTypeEnum
+from telegram.error import TelegramError
 from telegram.ext import CommandHandler, ConversationHandler, MessageHandler
 from telegram.ext.filters import COMMAND, TEXT, ChatType, UpdateType
 
@@ -848,7 +849,7 @@ async def group_arg(message: Message, arg: str, *, allow_special=False):
 
 
 async def uids_args(message, args: list[str], *, allow_groups=True):
-    uids = set()
+    uids: set[int] = set()
     for arg in args:
         try:
             uids.add(int(arg))
@@ -989,14 +990,30 @@ async def mark_absent(update: Update, context: AppContext):
 async def broadcast(update: Update, context: AppContext):
     message = cast(Message, update.effective_message)
     text = cast(str, message.text)
-    if " " not in text:
+    if text.count(" ") < 2:
         await message.reply_text(
-            "<b>Usage:</b> <code>/broadcast message...</code>\n\n"
-            "Everything after /broadcast, including formatting, will be sent to users - be careful!",
+            f"<b>Usage:</b> <code>/broadcast group message...</code>\n\n"
+            f"Everything after the group name, including formatting, will be sent to users - be careful!\n\n"
+            f"{special_groups_help}",
             parse_mode=ParseMode.HTML,
         )
         return END
-    utf32_offset = text.index(" ")
+    group_offset = text.index(" ") + 1
+    utf32_offset = text.index(" ", group_offset)
+    group = text[group_offset:utf32_offset]
+    if not re.match(GROUP_REGEX, group):
+        await message.reply_text(
+            f"Invalid group name {escape(group)}. (To send to everyone, use <code>/broadcast everyone ...</code>)",
+            parse_mode=ParseMode.HTML,
+        )
+        return END
+    target_count = len(get_group_member_ids(group))
+    if not target_count:
+        await message.reply_text(
+            f"No members in group {escape(group)}. (To send to everyone, use <code>/broadcast everyone ...</code>)",
+            parse_mode=ParseMode.HTML,
+        )
+        return END
     utf16_offset = len(text[: utf32_offset + 1].encode("utf-16-le")) // 2
     rest = text.encode("utf-16-le")[utf16_offset * 2 :].decode("utf-16-le")
     shifted_entities: list[dict] = []
@@ -1010,9 +1027,9 @@ async def broadcast(update: Update, context: AppContext):
             shifted_entities.append({**entity.to_dict(), "offset": entity.offset - utf16_offset})
 
     bid = str(int(time() * 1000))
-    context.user_data.broadcast_pending = PendingBroadcast(bid, rest, shifted_entities)
+    context.user_data.broadcast_pending = PendingBroadcast(bid, group, rest, shifted_entities)
 
-    prefix = "Are you sure you want to broadcast this message to ALL USERS?"
+    prefix = f"Are you sure you want to broadcast this message to {group} ({target_count} users)?"
     reshifted_entities = [
         MessageEntity(type=MessageEntity.BOLD, offset=0, length=len(prefix)),
         *[MessageEntity(**{**entity, "offset": entity["offset"] + len(prefix) + 2}) for entity in shifted_entities],
@@ -1030,6 +1047,29 @@ async def broadcast(update: Update, context: AppContext):
     return END
 
 
+async def broadcast_message(group: str, text: str, entities: list[MessageEntity], context: AppContext):
+    targets = get_group_member_users(group)
+    attempted = 0
+    success = 0
+    skipped = 0
+    for target in targets:
+        if not (target["present"] and target["tgUserId"]):
+            skipped += 1
+            continue
+        attempted += 1
+        try:
+            await context.bot.send_message(target["tgUserId"], text, entities=entities)
+        except TelegramError as err:
+            await context.application.process_error(None, err)
+        else:
+            success += 1
+    await admin_log(
+        f"Message sent successfully to {success} of {attempted} present users. {skipped} absent users skipped.",
+        None,
+        context,
+    )
+
+
 async def broadcast_callback(update: Update, context: AppContext):
     callback_query = cast(CallbackQuery, update.callback_query)
     action, bid = (callback_query.data or "").split(":")
@@ -1045,9 +1085,8 @@ async def broadcast_callback(update: Update, context: AppContext):
 
     if action == "br_send":
         entities = [MessageEntity(**d) for d in msg.entities]
-        # TODO: actually broadcast
-        await context.bot.send_message(callback_query.from_user.id, msg.text, entities=entities)
         await callback_query.edit_message_text("Broadcast sent.", reply_markup=None)
+        context.application.create_task(broadcast_message(msg.group, msg.text, entities, context))
 
         clean_text = msg.text
         if len(clean_text) > 1000:

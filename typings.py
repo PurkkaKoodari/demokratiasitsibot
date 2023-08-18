@@ -42,6 +42,7 @@ class PendingInitiative(TypedDict, total=False):
 @dataclass
 class PendingBroadcast:
     id: str
+    group: str
     text: str
     entities: list[dict]
 
