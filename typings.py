@@ -1,7 +1,22 @@
 from dataclasses import dataclass, field
-from typing import TypedDict, NotRequired
+from enum import StrEnum, auto
+from typing import TypedDict
 
 from telegram.ext import CallbackContext, ExtBot
+
+
+class PollState(StrEnum):
+    created = auto()
+    active = auto()
+    closed = auto()
+
+
+class InitiativeState(StrEnum):
+    submitted = auto()
+    shitpost = auto()
+    unconst = auto()
+    voting = auto()
+    accepted = auto()
 
 
 class PendingPoll(TypedDict, total=False):

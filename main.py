@@ -1,12 +1,17 @@
 import pprint
+from logging import getLogger
 
 from telegram import Update
 from telegram.ext import Application, BaseHandler, ChatMemberHandler, ConversationHandler, ContextTypes, CallbackContext
 
 from admin import admin_entry, admin_states, handle_chat_member
 from config import config
+from shared import admin_log
 from user import user_entry, user_states
 from typings import AppContext, BotData, UserData
+
+
+LOGGER = getLogger("dsitsibot")
 
 
 class DumpHandler(BaseHandler):
@@ -18,6 +23,14 @@ class DumpHandler(BaseHandler):
 
     def check_update(self, _update):
         return True
+
+
+async def log_error(update, context: AppContext):
+    try:
+        await admin_log(f"Error: {type(context.error).__name__}: {context.error}", None, context, parse_mode=None)
+    except Exception:
+        pass
+    LOGGER.exception("Unhandled error", exc_info=context.error)
 
 
 def main():
@@ -40,7 +53,9 @@ def main():
             # persistent=True,
         )
     )
+    # app.add_handler()
     app.add_handler(ChatMemberHandler(handle_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
+    app.add_error_handler(log_error)
     app.run_polling()
 
 

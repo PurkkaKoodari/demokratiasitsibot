@@ -20,10 +20,19 @@ class Locale(TypedDict):
     help: str
     absent: str
     unabsent: str
+    no_current_polls: str
+    new_poll: str
+    new_election: str
     poll_confirm: str
     election_confirm: str
+    poll_confirm_yes: str
+    poll_confirm_no: str
     poll_voted: str
     election_voted: str
+    poll_already_voted: str
+    election_already_voted: str
+    poll_closed: str
+    election_closed: str
     init_notifs_on: str
     init_notifs_off: str
     init_title: str
@@ -62,15 +71,24 @@ locale: dict[str, Locale] = {
         "invalid_code": "Koodi on virheellinen. Tarkista vielä oikeinkirjoitus ja pyydä tarvittaessa apua sitsien henkilökunnalta.",
         "used_code": "Koodia on jo käytetty toisella Telegram-käyttäjällä! Pyydä apua sitsien henkilökunnalta, jos haluat siirtää koodin tunnuksellesi.",
         "area": "Paikkasi on <b>pöydässä {area}</b>. Voit valita paikkasi tässä pöydässä vapaasti.",
-        "help": "Tervetuloa! {area}\n\nSitsien aikana äänestykset lähetetään sinulle tämän Telegram-botin kautta. Voit tarkistaa nykyisen äänestyksen komennolla /current.\n\nSitsien aikana voit tehdä kansalaisaloitteita komennolla /initiative. Voit lukea kansalaisaloitteita komennolla /initiatives.\n\n{initnotif}\n\nJos poistut sitseiltä, kirjoita komento /absent.",
+        "help": "Tervetuloa! {area}\n\nSitsien aikana äänestykset lähetetään sinulle tämän Telegram-botin kautta. Voit tarkistaa nykyisen äänestyksen komennolla /aanesta.\n\nSitsien aikana voit tehdä kansalaisaloitteita komennolla /aloite. Voit lukea kansalaisaloitteita komennolla /aloitteet.\n\n{initnotif}\n\nJos poistut sitseiltä, kirjoita komento /poistu.",
         "absent": "Sinut on merkitty poissaolevaksi. Voit palata sitseille lähettämällä minkä tahansa komennon.",
         "unabsent": "Sinut on merkitty paikallaolevaksi.",
-        "poll_confirm": "{title}\n\nHaluatko varmasti äänestää vaihtoehtoa {option}?",
-        "election_confirm": "{title}\n\nHaluatko varmasti äänestää ehdokasta {option}?",
-        "poll_voted": "{title}\n\nÄänestit vaihtoehtoa {option}.",
-        "election_voted": "{title}\n\nÄänestit ehdokasta {option}.",
-        "init_notifs_on": "Saat tällä hetkellä ilmoituksen kaikista uusista kansalaisaloitteista. Voit kytkeä tämän pois käytöstä komennolla /inotifications.",
-        "init_notifs_off": "Et saa tällä hetkellä ilmoituksia uusista kansalaisaloitteista. Voit kytkeä ne takaisin päälle komennolla /inotifications.",
+        "no_current_polls": "Äänestyksiä ei ole käynnissä!",
+        "new_poll": "Uusi äänestys!",
+        "new_election": "Uusi äänestys!",
+        "poll_confirm": 'Haluatko varmasti äänestää vaihtoehtoa "{option}"?',
+        "election_confirm": "Haluatko varmasti äänestää ehdokasta {option}?",
+        "poll_confirm_yes": "Kyllä, äänestä!",
+        "poll_confirm_no": "Eiku",
+        "poll_voted": "Äänesi on tallennettu.",
+        "election_voted": "Äänesi on tallennettu.",
+        "poll_already_voted": "Olet jo äänestänyt.",
+        "election_already_voted": "Olet jo äänestänyt.",
+        "poll_closed": "Äänestys on suljettu.",
+        "election_closed": "Äänestys on suljettu.",
+        "init_notifs_on": "Saat tällä hetkellä ilmoituksen kaikista uusista kansalaisaloitteista. Voit kytkeä tämän pois käytöstä komennolla /ailmoitukset.",
+        "init_notifs_off": "Et saa tällä hetkellä ilmoituksia uusista kansalaisaloitteista. Voit kytkeä ne takaisin päälle komennolla /ailmoitukset.",
         "init_title": "Tervetuloa kansalaisaloitteen laadintaan!\n\nMieti tarkasti, mitä ehdotat \u2013 kansalaisaloitteet tarkastetaan ennen julkaisua, ja roskapostin lähettäminen tarkastettavaksi johtaa aloitteiden luontikieltoon.\n\nKeksi ensin osuva otsikko aloitteellesi! (max. {length} merkkiä)",
         "init_title_placeholder": "Aloitteen otsikko",
         "init_title_length": "Aloitteen otsikko saa olla max. {length} merkkiä pitkä.",
@@ -108,10 +126,19 @@ locale: dict[str, Locale] = {
         "help": "Welcome! {area}\n\nDuring the sitsit, polls will be sent to you via this Telegram bot. You can check the current poll with the command /current.\n\nDuring the sitsit, you can create citizen's initiatives with the command /initiative. You can read existing initiatives with the command /initiatives.\n\n{initnotif}\n\nIf you leave the sitsit, send the command /absent.",
         "absent": "You have been marked as absent. Send any command to return to the sitsit.",
         "unabsent": "You are no longer absent.",
-        "poll_confirm": "{title}\n\nAre you sure you want to vote for {option}?",
-        "election_confirm": "{title}\n\nAre you sure you want to vote for {option}?",
-        "poll_voted": "{title}\n\nYou voted for {option}.",
-        "election_voted": "{title}\n\nYou voted for {option}.",
+        "no_current_polls": "No votes are ongoing!",
+        "new_poll": "New referendum!",
+        "new_election": "New election!",
+        "poll_confirm": 'Are you sure you want to vote for "{option}"?',
+        "election_confirm": "Are you sure you want to vote for {option}?",
+        "poll_confirm_yes": "Yes, vote!",
+        "poll_confirm_no": "No, cancel",
+        "poll_voted": "Your vote has been recorded.",
+        "election_voted": "Your vote has been recorded.",
+        "poll_already_voted": "You have already voted in this referendum.",
+        "election_already_voted": "You have already voted in this election.",
+        "poll_closed": "This referendum has ended.",
+        "election_closed": "This election has ended.",
         "init_notifs_on": "You are currently receiving notifications for all new initiatives. You can turn them off with the command /inotifications.",
         "init_notifs_off": "You are currently <b>not</b> receiving notifications for new initiatives. You can turn them back on with the command /inotifications.",
         "init_title": "Welcome to citizen's initiative creation!\n\nThink twice what you want to propose \u2013 initiatives will be checked before publication, and shitposting will lead to a ban from creating initiatives.\n\nFirst, come up with a catchy title for your initiative! (max. {length} characters)",

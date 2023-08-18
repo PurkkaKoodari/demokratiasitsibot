@@ -5,6 +5,8 @@ from time import time
 import re
 
 from telegram import (
+    BotCommand,
+    BotCommandScopeChat,
     Chat,
     CallbackQuery,
     ForceReply,
@@ -22,9 +24,10 @@ from telegram.ext.filters import COMMAND, TEXT, ChatType, UpdateType
 from config import config
 from db import db, get_user, DbUser
 from filters import ADMIN
-from help import send_help
+from help import send_help, user_commands
 from langs import lang_icons, locale, loc
-from typings import AppContext, PendingInitiative
+from shared import log_errors, send_poll, format_poll, is_member, ignore_errors
+from typings import AppContext, PendingInitiative, PollState
 from util import escape
 
 REG_LANG = "reg_lang"
@@ -85,6 +88,12 @@ async def lang_callback(update: Update, context: AppContext):
                 parse_mode=ParseMode.HTML,
                 reply_markup=None,
             )
+            if not ADMIN.filter(update):
+                async with log_errors(context):
+                    await context.bot.set_my_commands(
+                        [BotCommand(cmd, desc) for cmd, _, desc in user_commands[new_lang]],
+                        scope=BotCommandScopeChat(chat_id=callback_query.from_user.id),
+                    )
             user = get_user(update)
             if user is None:
                 return await ask_code(callback_query.from_user, context)
@@ -188,8 +197,154 @@ async def mark_not_absent(update: Update, context: AppContext, user: DbUser):
 
 @require_setup
 async def handle_current(update: Update, context: AppContext, user: DbUser):
-    await cast(Message, update.effective_message).reply_text(":)")
+    message = cast(Message, update.effective_message)
+    current_polls = db.execute(f"SELECT * FROM polls WHERE status = '{PollState.active}'").fetchall()
+    if not current_polls:
+        await message.reply_text(loc(context)["no_current_polls"])
+        return END
+    for poll in current_polls:
+        if not is_member(poll["voterGroup"], user):
+            continue
+        messages = db.execute(
+            f"SELECT messageId FROM sentMessages WHERE chatId = ? AND pollId = ? AND isAdmin = FALSE",
+            [message.chat_id, poll["id"]],
+        ).fetchall()
+        for db_msg in messages:
+            async with log_errors(context):
+                await context.bot.delete_message(chat_id=message.chat_id, message_id=db_msg["messageId"])
+            with db:
+                db.execute(
+                    "DELETE FROM sentMessages WHERE chatId = ? AND messageId = ?",
+                    [message.chat_id, db_msg["messageId"]],
+                )
+        await send_poll(context, poll, user)
     return END
+
+
+@require_setup
+async def poll_callback(update: Update, context: AppContext, user: DbUser):
+    callback_query = cast(CallbackQuery, update.callback_query)
+    action, oid = (callback_query.data or "").split(":")
+    oid = int(oid)
+    row = db.execute(
+        """
+        SELECT
+            options.id AS optionId,
+            options.textFi AS optionFi,
+            options.textEn AS optionEn,
+            options.area as optionArea,
+            polls.id AS pollId,
+            polls.*
+        FROM options
+        INNER JOIN polls ON options.pollId = polls.id
+        WHERE options.id = ?
+        """,
+        [oid],
+    ).fetchone()
+    if not row:
+        await callback_query.answer("Internal error - invalid option", show_alert=True)
+        return END
+
+    # handle "eiku"
+    lang = user["language"]
+    if action == "vote_cancel":
+        await callback_query.answer()
+        _, messages, keyboards = format_poll(row, (lang,))
+        opts_key = (lang, user["area"]) if row["perArea"] else lang
+        if opts_key not in keyboards:
+            opts_key = (lang, None)  # non-elections don't have per-area options
+        with ignore_errors(filter="not modified"):
+            await callback_query.edit_message_text(
+                messages[lang], reply_markup=keyboards[opts_key], parse_mode=ParseMode.HTML
+            )
+        return END
+
+    # validate that the user can vote on this option
+    if not is_member(row["voterGroup"], user):
+        await callback_query.answer(
+            "Seems like you're a hacker - you can't vote in this poll. Have a beer (at your cost)", show_alert=True
+        )
+        return END
+    if row["perArea"] and (row["optionArea"] is not None and user["area"] != row["optionArea"]):
+        await callback_query.answer(
+            "Seems like you're a hacker - you can't vote for that in your area. Have a beer (at your cost)",
+            show_alert=True,
+        )
+        return END
+
+    # validate that the poll is open
+    if row["status"] == PollState.created:
+        await callback_query.answer(
+            "Seems like you're a hacker - poll is not open yet. Have a beer (at your cost)", show_alert=True
+        )
+        return END
+    question = row[f"text{lang.capitalize()}"]
+    if row["status"] != PollState.active:
+        closed = loc(context)["poll_closed" if row["type"] != "election" else "election_closed"]
+        await callback_query.answer(
+            closed,
+            show_alert=True,
+        )
+        with ignore_errors(filter="not modified"):
+            await callback_query.edit_message_text(
+                f"{escape(question)}\n\n<b>{closed}</b>", reply_markup=None, parse_mode=ParseMode.HTML
+            )
+        return END
+
+    # prevent multiple votes
+    existing_vote = db.execute(
+        "SELECT 1 FROM votes WHERE pollId = ? AND voterId = ?", [row["pollId"], user["id"]]
+    ).fetchone()
+    if existing_vote:
+        closed = loc(context)["poll_already_voted" if row["type"] != "election" else "election_already_voted"]
+        await callback_query.answer(
+            closed,
+            show_alert=True,
+        )
+        with ignore_errors(filter="not modified"):
+            await callback_query.edit_message_text(
+                f"{escape(question)}\n\n<b>{closed}</b>", reply_markup=None, parse_mode=ParseMode.HTML
+            )
+        return END
+
+    match action:
+        case "vote_vote":
+            await callback_query.answer()
+            option = row[f"option{lang.capitalize()}"]
+            key = "poll_confirm" if row["type"] != "election" else "election_confirm"
+            suffix = loc(context)[key].format(option=escape(option))
+            with ignore_errors(filter="not modified"):
+                await callback_query.edit_message_text(
+                    f"{escape(question)}\n\n<b>{suffix}</b>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    loc(context)["poll_confirm_yes"], callback_data=f"vote_confirm:{oid}"
+                                )
+                            ],
+                            [InlineKeyboardButton(loc(context)["poll_confirm_no"], callback_data=f"vote_cancel:{oid}")],
+                        ]
+                    ),
+                )
+            return END
+        case "vote_confirm":
+            with db:
+                db.execute(
+                    "INSERT OR IGNORE INTO votes (pollId, voterId, optionId, area) VALUES (?, ?, ?, ?)",
+                    [row["pollId"], user["id"], row["optionId"], user["area"]],
+                )
+            voted = loc(context)["poll_voted" if row["type"] != "election" else "election_voted"]
+            await callback_query.answer(voted)
+            with ignore_errors(filter="not modified"):
+                await callback_query.edit_message_text(
+                    f"{escape(question)}\n\n<b>{voted}</b>", reply_markup=None, parse_mode=ParseMode.HTML
+                )
+            return END
+        case _:
+            await callback_query.answer()
+            return END
 
 
 def initiative_create_allowed(user: DbUser, context: AppContext):
@@ -405,17 +560,25 @@ async def handle_inotifications(update: Update, context: AppContext, user: DbUse
 
 user_entry = [
     CommandHandler("start", handle_start, ~ADMIN & ChatType.PRIVATE & ~UpdateType.EDITED),
+    CommandHandler("aloita", handle_start, ~ADMIN & ChatType.PRIVATE & ~UpdateType.EDITED),
     CommandHandler("start_user", handle_start, ADMIN & ChatType.PRIVATE & ~UpdateType.EDITED),
     CommandHandler("help", handle_start, ChatType.PRIVATE & ~UpdateType.EDITED),
     CommandHandler("language", handle_language, ChatType.PRIVATE & ~UpdateType.EDITED),
+    CommandHandler("kieli", handle_language, ChatType.PRIVATE & ~UpdateType.EDITED),
     CommandHandler("absent", handle_absent, ChatType.PRIVATE & ~UpdateType.EDITED),
+    CommandHandler("poistu", handle_absent, ChatType.PRIVATE & ~UpdateType.EDITED),
     CommandHandler("current", handle_current, ChatType.PRIVATE & ~UpdateType.EDITED),
+    CommandHandler("aanesta", handle_current, ChatType.PRIVATE & ~UpdateType.EDITED),
     CommandHandler("initiative", handle_initiative, ChatType.PRIVATE & ~UpdateType.EDITED),
+    CommandHandler("aloite", handle_initiative, ChatType.PRIVATE & ~UpdateType.EDITED),
     CommandHandler("initiatives", handle_initiatives, ChatType.PRIVATE & ~UpdateType.EDITED),
+    CommandHandler("aloitteet", handle_initiatives, ChatType.PRIVATE & ~UpdateType.EDITED),
     CommandHandler("inotifications", handle_inotifications, ChatType.PRIVATE & ~UpdateType.EDITED),
+    CommandHandler("ailmoitukset", handle_inotifications, ChatType.PRIVATE & ~UpdateType.EDITED),
     CallbackQueryHandler(lang_callback, pattern=r"^lang_\w+$"),
     CallbackQueryHandler(initiative_callback, pattern=r"^init_\w+:\d+$"),
     CallbackQueryHandler(initiatives_callback, pattern=r"^inits_\w+:\d+$"),
+    CallbackQueryHandler(poll_callback, pattern=r"^vote_\w+:\d+$"),
 ]
 
 user_states = {

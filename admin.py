@@ -1,9 +1,12 @@
 import re
+from collections import Counter
 from sqlite3 import IntegrityError
 from time import time
 from typing import Any, cast
 
 from telegram import (
+    BotCommand,
+    BotCommandScopeChat,
     CallbackQuery,
     Chat,
     ChatMemberUpdated,
@@ -16,16 +19,26 @@ from telegram import (
     Update,
     User,
 )
-from telegram.constants import ChatMemberStatus, ParseMode
+from telegram.constants import ChatMemberStatus, ParseMode, ChatType as ChatTypeEnum
 from telegram.ext import CommandHandler, ConversationHandler, MessageHandler
 from telegram.ext.filters import COMMAND, TEXT, ChatType, UpdateType
 
 from config import config
 from db import db, get_kv, set_kv
 from filters import ADMIN, CONFIG_ADMIN, db_admins, AdminCallbackQueryHandler, config_admins, banned_admins
+from help import admin_commands, user_commands, admin_help, special_groups_help
 from langs import lang_icons
-from typings import AppContext, PendingPoll, PendingBroadcast
-from util import escape, user_link
+from shared import (
+    get_group_member_ids,
+    admin_log,
+    send_poll,
+    close_poll,
+    reopen_poll,
+    get_group_member_users,
+    ignore_errors,
+)
+from typings import AppContext, PendingPoll, PendingBroadcast, PollState
+from util import escape, grouplist
 
 NP_QUESTION = "np_question"
 NP_OPTIONS = "np_options"
@@ -70,24 +83,12 @@ async def handle_chat_member(update: Update, context: AppContext):
 async def handle_admin_start(update: Update, context: AppContext):
     chat = cast(Chat, update.effective_chat)
     await chat.send_message(
-        """\
-Welcome! Things you can do in admin-approved chats:
-
-/grant - get admin privileges for DMs
-/broadcast - broadcast a message to all participants
-/admin_log - show log of admin actions here
-/initiative_log - handle initiatives here
-/initiatitive_alert [number...] - alert when initiatives reach signature counts
-/polls - manage existing polls (only in private chat)
-/newpoll - create a poll (only in private chat)
-/newelection - create an election (only in private chat)
-/unassign_code [code] - unassign a seat code from its Telegram user
-/group_list - list all groups
-/group_view [group] - view members of a group
-/group_add [group] [uid...] - add people to a group
-/group_remove [group] [uid...] - remove people from a group
-/mark_absent [uid...] - mark people as absent from the sitsit
-/start_user - register as a sitsi participant (only in private chat)"""
+        admin_help,
+        parse_mode=ParseMode.HTML,
+    )
+    commands = (admin_commands + user_commands["en"][1:]) if chat.type == ChatTypeEnum.PRIVATE else admin_commands
+    await context.bot.set_my_commands(
+        [BotCommand(cmd, desc) for cmd, _, desc in commands], scope=BotCommandScopeChat(chat_id=chat.id)
     )
     return await handle_grant(update, context, True)
 
@@ -144,9 +145,10 @@ async def update_menu(
                 text, reply_markup=reply_markup, parse_mode=ParseMode.HTML
             )
         else:
-            await update.callback_query.edit_message_text(
-                text, reply_markup=cast(Any, reply_markup), parse_mode=ParseMode.HTML
-            )
+            with ignore_errors(filter="not modified"):
+                await update.callback_query.edit_message_text(
+                    text, reply_markup=cast(Any, reply_markup), parse_mode=ParseMode.HTML
+                )
     else:
         await cast(Message, update.effective_message).reply_text(
             text, reply_markup=reply_markup or ReplyKeyboardRemove(), parse_mode=ParseMode.HTML
@@ -246,9 +248,7 @@ async def newpoll_save_options(update: Update, context: AppContext):
         # creating
         if other_opts is not None:
             pid = newpoll_create(pending, is_election=False)
-            await admin_log(
-                f"created the poll <b>{escape(cast(str, pending.get('question_fi')))}</b>.", update, context
-            )
+            await admin_log(f"created the poll <b>{escape(cast(str, pending.get('textFi')))}</b>.", update, context)
             context.user_data.poll_pending = {}
             return await newpoll_created(update, context, pid, is_election=False)
         else:
@@ -259,16 +259,20 @@ async def newpoll_ask_group(update: Update, context: AppContext, group: str, com
     match group:
         case "voterGroup":
             title = "voter group"
-            desc = "This group of users will see the poll and can vote. Send <code>everyone</code> for everyone."
+            desc = "This group of users will see the poll and can vote."
         case "sourceGroup":
             title = "candidate group"
-            desc = "This group of users will be candidates for the election. Send <code>everyone</code> for everyone."
+            desc = "This group of users will be candidates for the election."
         case _:
             raise AssertionError("bad group")
     prefix = ""
     if complain:
         prefix = "<b>Invalid group name!</b> Group names must be 1-32 of <code>a-z 0-9 _ -</code>.\n\n"
-    await update_menu(update, f"{prefix}Enter the new {title} name (or /cancel).\n\n{desc}", reply_markup=ForceReply())
+    await update_menu(
+        update,
+        f"{prefix}Enter the new {title} name (or /cancel).\n\n{desc}\n\n{special_groups_help}",
+        reply_markup=ForceReply(),
+    )
     context.user_data.poll_group = group
     return NP_GROUP
 
@@ -278,8 +282,6 @@ async def newpoll_save_group(update: Update, context: AppContext):
     new_group = cast(str, cast(Message, update.message).text).strip().lower()
     if not re.match(GROUP_REGEX, new_group):
         return await newpoll_ask_group(update, context, key, True)
-    if not new_group or new_group == "everyone":
-        new_group = None
     pid = context.user_data.poll_edit
     pending = context.user_data.poll_pending
     # always editing
@@ -378,11 +380,9 @@ def newpoll_menu_text(poll, top=None, bottom=None, pending: PendingPoll = {}):
         text += "\n".join(f"- {escape(fi)} / {escape(en)}" for fi, en in opts)
         text += "\n\n"
     text += f"Voting per area: <b>{'yes' if merged['perArea'] else 'no'}</b>"
-    text += f"\nVoting: "
-    text += f"<code>{escape(merged['voterGroup'])}</code>" if merged["voterGroup"] else "<b>everyone</b>"
+    text += f"\nVoting: <code>{escape(merged['voterGroup'])}</code>"
     if is_election:
-        text += f"\nCandidates: "
-        text += f"<code>{escape(merged['sourceGroup'])}</code>" if merged["sourceGroup"] else "<b>everyone</b>"
+        text += f"\nCandidates: <code>{escape(merged['sourceGroup'])}</code>"
     if top:
         text = f"{top}\n\n{text}"
     if bottom:
@@ -410,7 +410,7 @@ async def newpoll_callback(update: Update, context: AppContext):
         context.user_data.poll_pending = {}
 
     # don't allow editing polls after opening
-    if (action.startswith("np_edit") or action == "np_commit") and poll["status"] != "created":
+    if (action.startswith("np_edit") or action == "np_commit") and poll["status"] != PollState.created:
         await callback_query.answer("Poll already active!")
         context.user_data.poll_pending = {}
         return await newpoll_main_menu(update, context, pid, poll)
@@ -466,14 +466,14 @@ async def newpoll_callback(update: Update, context: AppContext):
             context.user_data.poll_pending = {}
             return await newpoll_main_menu(update, context, pid, top="<b>Poll saved.</b>")
 
-        case "np_activate" | "np_activate2" if poll["status"] == "active":
+        case "np_activate" | "np_activate2" if poll["status"] == PollState.active:
             await callback_query.answer("Poll already active!")
             return await newpoll_main_menu(update, context, pid, poll)
         case "np_activate":
             await callback_query.answer()
             bottom = (
                 "<b>Are you sure you want to ACTIVATE this poll?</b>"
-                if poll["status"] == "created"
+                if poll["status"] == PollState.created
                 else "<b>Are you sure you want to REOPEN this poll?</b>"
             )
             await update_menu(
@@ -489,12 +489,72 @@ async def newpoll_callback(update: Update, context: AppContext):
             return NP_MENU
         case "np_activate2":
             with db:
-                db.execute("UPDATE polls SET status='active', updatedAt=CURRENT_TIMESTAMP WHERE pid=?", [pid])
-            await admin_log(f"activated the poll <b>{escape(poll['textFi'])}</b>.", update, context)
-            # TODO: reopen polls for users
-            return await newpoll_main_menu(update, context, pid, poll, top="<b>Poll activated.</b>")
+                if poll["status"] == PollState.created and is_election:
+                    # generate options
+                    db.execute("DELETE FROM options WHERE pollId = ?", [poll["id"]])
+                    candidates = get_group_member_users(poll["sourceGroup"])
+                    candidates = [cand for cand in candidates if cand["candidateNumber"]]
+                    if poll["perArea"]:
+                        voters = get_group_member_users(poll["voterGroup"])
+                        cand_areas = Counter(cand["area"] for cand in candidates)
+                        voter_areas = {voter["area"] for voter in voters}
+                        missing_areas = voter_areas - set(cand_areas)
+                        if missing_areas:
+                            await callback_query.answer(
+                                f"Some areas don't have candidates: " + ", ".join(missing_areas),
+                                show_alert=True,
+                            )
+                            return NP_MENU
+                        elif (max_cands := max(cand_areas.values())) > config["election"]["max_candidates"]:
+                            await callback_query.answer(
+                                f"There are too many candidates for an area: {max_cands} > {config['election']['max_candidates']}",
+                                show_alert=True,
+                            )
+                            return NP_MENU
+                    elif not candidates:
+                        await callback_query.answer(
+                            f"There are no candidates!",
+                            show_alert=True,
+                        )
+                        return NP_MENU
+                    elif len(candidates) > config["election"]["max_candidates"]:
+                        await callback_query.answer(
+                            f"There are too many candidates: {len(candidates)} > {config['election']['max_candidates']}",
+                            show_alert=True,
+                        )
+                        return NP_MENU
+                    candidates.sort(key=lambda cand: int(cand["candidateNumber"]))
+                    options = [
+                        (
+                            cand["id"],
+                            cand["area"] if poll["perArea"] else None,
+                            f"{cand['candidateNumber']} {cand['name']}",
+                        )
+                        for cand in candidates
+                    ]
+                    db.executemany(
+                        "INSERT INTO options (pollId, candidateId, area, textFi, textEn, orderNo) VALUES (?, ?, ?, ?, ?, ?)",
+                        [
+                            [poll["id"], cand_id, cand_area, cand_text, cand_text, num]
+                            for num, (cand_id, cand_area, cand_text) in enumerate(options)
+                        ],
+                    )
+                db.execute(
+                    f"UPDATE polls SET status='{PollState.active}', updatedAt=CURRENT_TIMESTAMP WHERE id=?", [pid]
+                )
+            verb = "reactivated" if poll["status"] != PollState.created else "activated"
+            await callback_query.answer(f"Poll {verb}.")
+            await admin_log(
+                f"{verb} the poll <b>{escape(poll['textFi'])}</b>.",
+                update,
+                context,
+            )
+            if poll["status"] != PollState.created:
+                context.application.create_task(reopen_poll(context, pid))
+            poll = {**poll, "status": PollState.active}
+            return await newpoll_main_menu(update, context, pid, poll, top=f"<b>Poll {verb}.</b>")
 
-        case "np_announce" | "np_announce2" | "np_close" | "np_close2" if poll["status"] != "active":
+        case "np_announce" | "np_announce2" | "np_close" | "np_close2" if poll["status"] != PollState.active:
             await callback_query.answer("Poll is not active!")
             return await newpoll_main_menu(update, context, pid, poll)
         case "np_announce":
@@ -511,14 +571,15 @@ async def newpoll_callback(update: Update, context: AppContext):
             )
             return NP_MENU
         case "np_announce2":
+            await callback_query.answer("Poll announced.")
             await admin_log(f"announced the poll <b>{escape(poll['textFi'])}</b>.", update, context)
-            # TODO: announce polls for users
+            context.application.create_task(send_poll(context, pid))
             return await newpoll_main_menu(update, context, pid, poll, top="<b>Poll announced.</b>")
         case "np_close":
             await callback_query.answer()
             await update_menu(
                 update,
-                newpoll_menu_text(poll, bottom="<b>Are you sure you want to close this poll and get results?</b>"),
+                newpoll_menu_text(poll, bottom="<b>Are you sure you want to close this poll?</b>"),
                 reply_markup=InlineKeyboardMarkup(
                     [
                         [InlineKeyboardButton("Yes, close!", callback_data=f"np_close2:{pid}")],
@@ -529,10 +590,61 @@ async def newpoll_callback(update: Update, context: AppContext):
             return NP_MENU
         case "np_close2":
             with db:
-                db.execute("UPDATE polls SET status='closed' WHERE pid=?", [pid])
+                db.execute(
+                    f"UPDATE polls SET status='{PollState.closed}', updatedAt=CURRENT_TIMESTAMP WHERE id=?", [pid]
+                )
+            await callback_query.answer("Poll closed.")
             await admin_log(f"closed the poll <b>{escape(poll['textFi'])}</b>.", update, context)
-            # TODO: close polls for users
+            context.application.create_task(close_poll(context, pid))
+            poll = {**poll, "status": PollState.closed}
             return await newpoll_main_menu(update, context, pid, poll, top="<b>Poll closed.</b>")
+
+        case "np_results" if poll["status"] != PollState.closed:
+            await callback_query.answer("Poll is not closed!")
+            return await newpoll_main_menu(update, context, pid, poll)
+        case "np_results":
+            await callback_query.answer()
+            result = escape(poll["textFi"])
+            if poll["perArea"]:
+                votes = db.execute(
+                    """
+                    SELECT options.textFi, votes.area, options.candidateId, COUNT(*) AS count
+                    FROM votes
+                    INNER JOIN options ON votes.optionId = options.id
+                    WHERE votes.pollId = ?
+                    GROUP BY votes.optionId, votes.area
+                    ORDER BY votes.area ASC, count DESC
+                    """,
+                    [poll["id"]],
+                ).fetchall()
+                by_area = grouplist(votes, lambda vote: vote["area"])
+            else:
+                votes = db.execute(
+                    """
+                    SELECT options.textFi, options.candidateId, COUNT(*) AS count
+                    FROM votes
+                    INNER JOIN options ON votes.optionId = options.id
+                    WHERE votes.pollId = ?
+                    GROUP BY votes.optionId
+                    ORDER BY count DESC
+                    """,
+                    [poll["id"]],
+                ).fetchall()
+                by_area = {None: votes}
+            for area, votes in by_area.items():
+                if area is not None:
+                    result += f"\n\n<b>Results in area {escape(area)}</b>:"
+                else:
+                    result += f"\n\n<b>Results</b>:"
+                for row in votes:
+                    result += "\n"
+                    if row["candidateId"] is not None:
+                        result += f"(UID <code>{row['candidateId']}</code>) "
+                    result += f"{escape(row['textFi'])}: {row['count']} votes"
+                if not votes:
+                    result += "\nNo votes."
+            return await callback_query.edit_message_text(text=result, parse_mode=ParseMode.HTML, reply_markup=None)
+
         case _:
             await callback_query.answer()
             return await newpoll_main_menu(update, context, pid, poll)
@@ -598,37 +710,29 @@ async def newpoll_main_menu(
         newpoll_menu_text(poll, top=top, bottom=bottom),
         reply_markup=InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("Edit", callback_data=f"np_edit:{pid}")],
+                *(
+                    ([InlineKeyboardButton("Edit", callback_data=f"np_edit:{pid}")],)
+                    if poll["status"] == PollState.created
+                    else ()
+                ),
                 [
                     InlineKeyboardButton("Activate", callback_data=f"np_activate:{pid}")
-                    if poll["status"] == "created"
-                    else InlineKeyboardButton("Close & Results", callback_data=f"np_close:{pid}")
-                    if poll["status"] == "active"
+                    if poll["status"] == PollState.created
+                    else InlineKeyboardButton("Close", callback_data=f"np_close:{pid}")
+                    if poll["status"] == PollState.active
                     else InlineKeyboardButton("Reopen", callback_data=f"np_activate:{pid}"),
                 ],
                 *(
                     ([InlineKeyboardButton("Announce", callback_data=f"np_announce:{pid}")],)
-                    if poll["status"] == "active"
+                    if poll["status"] == PollState.active
+                    else ([InlineKeyboardButton("Results", callback_data=f"np_results:{pid}")],)
+                    if poll["status"] == PollState.closed
                     else ()
                 ),
             ]
         ),
     )
     return NP_MENU
-
-
-async def admin_log(
-    action: str, update: Update, context: AppContext, parse_mode=ParseMode.HTML, extra_target: int | None = None
-):
-    target = get_kv("admin_log", None)
-    user = cast(User, update.effective_user)
-    message = f"{user_link(user)} {action}"
-    if user.id != config["admins"][0]:
-        await context.bot.send_message(config["admins"][0], message, parse_mode=parse_mode)
-    if target:
-        await context.bot.send_message(target, message, parse_mode=parse_mode)
-    if extra_target and extra_target != target and extra_target != config["admins"][0]:
-        await context.bot.send_message(extra_target, message, parse_mode=parse_mode)
 
 
 async def set_admin_log(update: Update, context: AppContext):
@@ -681,12 +785,24 @@ async def poll_chooser(update: Update, context: AppContext):
         paging.append(InlineKeyboardButton("<<", callback_data=f"polls:{max(0, offset - CHOOSER_PAGE_SIZE)}"))
     if poll_count > offset + CHOOSER_PAGE_SIZE:
         paging.append(InlineKeyboardButton(">>", callback_data=f"polls:{max(0, offset + CHOOSER_PAGE_SIZE)}"))
+    status_labels = {
+        PollState.active: "[ACTIVE] ",
+        PollState.closed: "[CLOSED] ",
+    }
     await update_menu(
         update,
         "Choose a poll to edit.",
         reply_markup=InlineKeyboardMarkup(
             [
-                *([InlineKeyboardButton(poll["textFi"], callback_data=f"np_menu:{poll['id']}")] for poll in polls),
+                *(
+                    [
+                        InlineKeyboardButton(
+                            status_labels.get(poll["status"], "") + poll["textFi"],
+                            callback_data=f"np_menu:{poll['id']}",
+                        )
+                    ]
+                    for poll in polls
+                ),
                 *((paging,) if paging else ()),
             ]
         ),
@@ -718,28 +834,37 @@ async def unassign_code_start(update: Update, context: AppContext):
     return END
 
 
-async def group_arg(message: Message, arg: str):
+async def group_arg(message: Message, arg: str, *, allow_special=False):
     group = arg.strip().lower()
     if not re.match(GROUP_REGEX, group):
         await message.reply_text(
             "Invalid group name! Group names must be 1-32 of <code>a-z 0-9 _ -</code>.", parse_mode=ParseMode.HTML
         )
         return None
-    elif group == "everyone":
-        await message.reply_text("Cannot use everyone as group name.", parse_mode=ParseMode.HTML)
+    elif group in ("everyone", "absent", "present") and not allow_special:
+        await message.reply_text(f"Cannot use {group} as group name.", parse_mode=ParseMode.HTML)
         return None
     return group
 
 
-async def uids_args(message, args: list[str]):
-    try:
-        uids = [int(uid) for uid in args]
-    except Exception:
-        await message.reply_text(
-            "Invalid user IDs. User IDs should be numbers in the participant sheet.", parse_mode=ParseMode.HTML
-        )
-        return None
-    return uids
+async def uids_args(message, args: list[str], *, allow_groups=True):
+    uids = set()
+    for arg in args:
+        try:
+            uids.add(int(arg))
+        except ValueError:
+            if not allow_groups or not re.match(GROUP_REGEX, arg):
+                await message.reply_text(
+                    f"Invalid user ID or group {escape(arg)}. User IDs should be numbers in the participant sheet.",
+                    parse_mode=ParseMode.HTML,
+                )
+                return None
+            members = get_group_member_ids(arg)
+            if not members:
+                await message.reply_text(f"No members in group {escape(arg)}.", parse_mode=ParseMode.HTML)
+                return None
+            uids.update(members)
+    return list(uids)
 
 
 async def group_list(update: Update, context: AppContext):
@@ -786,7 +911,10 @@ async def group_view(update: Update, context: AppContext):
 async def group_add(update: Update, context: AppContext):
     message = cast(Message, update.effective_message)
     if not context.args or len(context.args) < 2:
-        await message.reply_text("<b>Usage:</b> <code>/group_add group_name uid...</code>", parse_mode=ParseMode.HTML)
+        await message.reply_text(
+            f"<b>Usage:</b> <code>/group_add to_group uid|group...</code>\n\n{special_groups_help}",
+            parse_mode=ParseMode.HTML,
+        )
         return END
     group = await group_arg(message, context.args[0])
     uids = await uids_args(message, context.args[1:])
@@ -816,7 +944,8 @@ async def group_remove(update: Update, context: AppContext):
     message = cast(Message, update.effective_message)
     if not context.args or len(context.args) < 2:
         await message.reply_text(
-            "<b>Usage:</b> <code>/group_remove group_name uid...</code>", parse_mode=ParseMode.HTML
+            f"<b>Usage:</b> <code>/group_remove from_group uid|group...</code>\n\n{special_groups_help}",
+            parse_mode=ParseMode.HTML,
         )
         return END
     group = await group_arg(message, context.args[0])
@@ -839,9 +968,11 @@ async def group_remove(update: Update, context: AppContext):
 async def mark_absent(update: Update, context: AppContext):
     message = cast(Message, update.effective_message)
     if not context.args or not context.args:
-        await message.reply_text("<b>Usage:</b> <code>/mark_absent uid...</code>", parse_mode=ParseMode.HTML)
+        await message.reply_text(
+            f"<b>Usage:</b> <code>/mark_absent uid...</code>\n\n{special_groups_help}", parse_mode=ParseMode.HTML
+        )
         return END
-    uids = await uids_args(message, context.args)
+    uids = await uids_args(message, context.args, allow_groups=False)
     if uids:
         with db:
             cur = db.cursor()

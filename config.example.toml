@@ -3,9 +3,10 @@ database = "bot.db"
 admins = [12345678]
 
 [election]
-areas = []
+max_candidates = 20
 
 [initiatives]
 title_max_len = 40
 desc_max_len = 200
 shitpost_bans = [30, 60, 120]
+default_alerts = [10, 20, 30, 50]
