@@ -1,16 +1,18 @@
 from random import shuffle
-from sqlite3 import Row
-from typing import cast
+from typing import cast, Any
 
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, User
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, User, Message, ForceReply, ReplyKeyboardRemove
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
 from config import config
-from db import db, DbUser, get_kv
+from db import db, DbUser, get_kv, DbPoll, DbInitiative
 from langs import locale
 from typings import AppContext
 from util import escape, user_link, grouplist
+
+
+GROUP_REGEX = r"^[a-z0-9_-]{1,32}$"
 
 
 class ignore_errors:
@@ -104,183 +106,21 @@ def get_group_member_users(group: str) -> list[DbUser]:
     ).fetchall()
 
 
-def get_poll(poll_id: int | Row) -> Row:
-    if isinstance(poll_id, int):
-        return db.execute("SELECT * FROM polls WHERE id = ?", [poll_id]).fetchone()
-    else:
-        return poll_id
-
-
-def format_poll(
-    poll: int | Row,
-    langs: tuple[str, ...] = ("fi", "en"),
-) -> tuple[Row, dict[str, str], dict[str | tuple[str, str | None], InlineKeyboardMarkup]]:
-    poll = get_poll(poll)
-    if not poll:
-        raise ValueError("poll missing")
-    options = db.execute(
-        "SELECT id, textFi, textEn, area FROM options WHERE pollId = ? ORDER BY orderNo ASC", [poll["id"]]
-    ).fetchall()
-    messages = {lang: escape(poll[f"text{lang.capitalize()}"]) for lang in langs}
-    if poll["perArea"]:
-        areas = grouplist(options, lambda opt: opt["area"])
-        keyboards = {
-            (lang, area): InlineKeyboardMarkup(
-                [
-                    [InlineKeyboardButton(opt[f"text{lang.capitalize()}"], callback_data=f"vote_vote:{opt['id']}")]
-                    for opt in area_opts
-                ]
+async def update_menu(
+    update: Update, text: str, reply_markup: InlineKeyboardMarkup | ForceReply | ReplyKeyboardRemove | None
+):
+    if update.callback_query is not None:
+        if reply_markup is not None and not isinstance(reply_markup, InlineKeyboardMarkup):
+            await update.callback_query.edit_message_reply_markup(None)
+            await update.callback_query.from_user.send_message(
+                text, reply_markup=reply_markup, parse_mode=ParseMode.HTML
             )
-            for lang in langs
-            for area, area_opts in areas.items()
-        }
-    else:
-        keyboards = {
-            lang: InlineKeyboardMarkup(
-                [
-                    [InlineKeyboardButton(opt[f"text{lang.capitalize()}"], callback_data=f"vote_vote:{opt['id']}")]
-                    for opt in options
-                ]
-            )
-            for lang in langs
-        }
-    return poll, messages, cast(dict, keyboards)
-
-
-async def send_poll(context: AppContext, poll: int | Row, user: DbUser | None = None):
-    langs = (user["language"],) if user else ("fi", "en")
-    poll, messages, keyboards = format_poll(poll, langs)
-    targets = [user] if user is not None else get_group_member_users(poll["voterGroup"])
-    if user:
-        votes = db.execute(
-            "SELECT voterId FROM votes WHERE pollId = ? AND voterId = ?", [poll["id"], user["id"]]
-        ).fetchall()
-    else:
-        votes = db.execute("SELECT voterId FROM votes WHERE pollId = ?", [poll["id"]]).fetchall()
-    votes = {vote["voterId"] for vote in votes}
-    shuffle(targets)
-    attempted = 0
-    success = 0
-    absent = 0
-    voted = 0
-    for target in targets:
-        if not target["tgUserId"] or not target["language"] or (not user and not target["present"]):
-            absent += 1
-            continue
-        lang = target["language"]
-        opts_key = (lang, target["area"]) if poll["perArea"] else lang
-        if opts_key not in keyboards:
-            opts_key = (lang, None)  # non-elections don't have per-area options
-        prefix = ""
-        if user is None:
-            key = "new_poll" if poll["type"] != "election" else "new_election"
-            prefix = f"<b>{locale[lang][key]}</b>\n\n"
-        suffix = ""
-        if target["id"] in votes:
-            if not user:
-                voted += 1
-                continue
-            key = "poll_already_voted" if poll["type"] != "election" else "election_already_voted"
-            suffix = f"\n\n<b>{locale[lang][key]}</b>"
-        attempted += 1
-        try:
-            msg = await context.bot.send_message(
-                target["tgUserId"],
-                prefix + messages[lang] + suffix,
-                parse_mode=ParseMode.HTML,
-                reply_markup=None if target["id"] in votes else keyboards[opts_key],
-            )
-        except TelegramError as err:
-            await context.application.process_error(None, err)
         else:
-            with db:
-                cur = db.cursor()
-                cur.execute(
-                    "INSERT INTO sentMessages (chatId, messageId, userId, pollId, language, isAdmin, status) VALUES (?, ?, ?, ?, ?, FALSE, 'open')",
-                    [msg.chat_id, msg.message_id, target["id"], poll["id"], lang],
+            with ignore_errors(filter="not modified"):
+                await update.callback_query.edit_message_text(
+                    text, reply_markup=cast(Any, reply_markup), parse_mode=ParseMode.HTML
                 )
-            success += 1
-    if not user:
-        await admin_log(
-            f"Poll <b>{escape(poll['textFi'])}</b> sent successfully to {success} of {attempted} present users. "
-            f"{absent} absent users and {voted} already voted users skipped.",
-            None,
-            context,
+    else:
+        await cast(Message, update.effective_message).reply_text(
+            text, reply_markup=reply_markup or ReplyKeyboardRemove(), parse_mode=ParseMode.HTML
         )
-
-
-async def close_poll(context: AppContext, poll: int | Row):
-    poll = get_poll(poll)
-    messages = db.execute(
-        f"SELECT chatId, messageId, language FROM sentMessages WHERE pollId = ? AND isAdmin = FALSE", [poll["id"]]
-    ).fetchall()
-    success = 0
-    attempted = 0
-    for db_msg in messages:
-        lang = db_msg["language"]
-        question = poll[f"text{lang.capitalize()}"]
-        closed = locale[lang]["poll_closed" if poll["type"] != "election" else "election_closed"]
-        attempted += 1
-        try:
-            with ignore_errors(filter="not modified"):
-                await context.bot.edit_message_text(
-                    f"{escape(question)}\n\n<b>{closed}</b>",
-                    chat_id=db_msg["chatId"],
-                    message_id=db_msg["messageId"],
-                    reply_markup=None,
-                    parse_mode=ParseMode.HTML,
-                )
-        except TelegramError as err:
-            await context.application.process_error(None, err)
-        else:
-            success += 1
-    await admin_log(
-        f"Poll <b>{escape(poll['textFi'])}</b> closed successfully in {success} of {attempted} messages.",
-        None,
-        context,
-    )
-
-
-async def reopen_poll(context: AppContext, poll: int | Row):
-    poll, messages, keyboards = format_poll(poll)
-    db_messages = db.execute(
-        f"""
-        SELECT sentMessages.chatId, sentMessages.messageId, sentMessages.userId, users.language, users.area
-        FROM sentMessages
-        INNER JOIN users ON sentMessages.userId = users.id
-        WHERE pollId = ? AND isAdmin = FALSE
-        """,
-        [poll["id"]],
-    ).fetchall()
-    votes = db.execute("SELECT voterId FROM votes WHERE pollId = ?", [poll["id"]]).fetchall()
-    votes = {vote["voterId"] for vote in votes}
-    success = 0
-    attempted = 0
-    for db_msg in db_messages:
-        lang = db_msg["language"]
-        opts_key = (lang, db_msg["area"]) if poll["perArea"] else lang
-        if opts_key not in keyboards:
-            opts_key = (lang, None)  # non-elections don't have per-area options
-        suffix = ""
-        if db_msg["userId"] in votes:
-            key = "poll_already_voted" if poll["type"] != "election" else "election_already_voted"
-            suffix = f"\n\n<b>{locale[lang][key]}</b>"
-        attempted += 1
-        try:
-            with ignore_errors(filter="not modified"):
-                await context.bot.edit_message_text(
-                    messages[lang] + suffix,
-                    chat_id=db_msg["chatId"],
-                    message_id=db_msg["messageId"],
-                    reply_markup=None if db_msg["userId"] in votes else keyboards[opts_key],
-                    parse_mode=ParseMode.HTML,
-                )
-        except TelegramError as err:
-            await context.application.process_error(None, err)
-        else:
-            success += 1
-    await admin_log(
-        f"Poll <b>{escape(poll['textFi'])}</b> reopened successfully in {success} of {attempted} messages.",
-        None,
-        context,
-    )

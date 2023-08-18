@@ -38,7 +38,7 @@ admin_commands: list[tuple[str, str | None, str]] = [
     ("broadcast", "<group> <message...>", "broadcast a message to a group"),
     ("admin_log", None, "show log of admin actions here"),
     ("initiative_log", None, "handle initiatives here"),
-    ("initiatitive_alert", "<number...>", "alert when initiatives reach signature counts"),
+    ("initiative_alert", "<number...>", "alert when initiatives reach signature counts"),
     ("polls", None, "manage existing polls (only in private chat)"),
     ("newpoll", None, "create a poll (only in private chat)"),
     ("newelection", None, "create an election (only in private chat)"),
@@ -54,7 +54,9 @@ admin_commands: list[tuple[str, str | None, str]] = [
 special_groups_help = """Special group names:
 <code>everyone</code>, <code>present</code>, <code>absent</code>"""
 
-admin_command_help = "\n".join(f"/{cmd}{' ' + args if args else ''} - {desc}" for cmd, args, desc in admin_commands[1:])
+admin_command_help = "\n".join(
+    f"/{cmd}{' ' + escape(args) if args else ''} - {desc}" for cmd, args, desc in admin_commands[1:]
+)
 
 admin_help = f"""\
 Welcome! Things you can do in admin-approved chats:

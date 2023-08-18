@@ -15,8 +15,8 @@ class InitiativeState(StrEnum):
     submitted = auto()
     shitpost = auto()
     unconst = auto()
-    voting = auto()
-    accepted = auto()
+    approved = auto()
+    closed = auto()
 
 
 class PendingPoll(TypedDict, total=False):
@@ -49,7 +49,7 @@ class PendingBroadcast:
 
 @dataclass
 class BotData:
-    init_handlers: dict[int, tuple[int, int]] = field(default_factory=dict)
+    init_handlers: dict[int, tuple[int, str, float]] = field(default_factory=dict)
 
 
 @dataclass
@@ -71,6 +71,11 @@ class UserData:
     poll_group: str | None = None
     """Current group key being edited in poll"""
     broadcast_pending: PendingBroadcast | None = None
+    """Broadcast message waiting for confirmation"""
+    iadm_edit: int | None = None
+    """Initiative ID being edited by admin"""
+    iadm_lang: str | None = None
+    """Current language being edited in an initiative"""
 
 
 class AppContext(CallbackContext[ExtBot, UserData, None, BotData]):

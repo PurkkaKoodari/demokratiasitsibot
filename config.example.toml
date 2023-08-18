@@ -10,3 +10,4 @@ title_max_len = 40
 desc_max_len = 200
 shitpost_bans = [30, 60, 120]
 default_alerts = [10, 20, 30, 50]
+handle_cooldown = 60

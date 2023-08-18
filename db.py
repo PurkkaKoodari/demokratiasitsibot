@@ -1,10 +1,11 @@
 import json
 import sqlite3
-from typing import Any, cast, TypedDict
+from typing import Any, cast, TypedDict, Literal
 
 from telegram import Update, User
 
 from config import config
+from typings import PollState, InitiativeState
 
 db = sqlite3.connect(config["database"])
 db.row_factory = sqlite3.Row
@@ -73,7 +74,8 @@ CREATE TABLE IF NOT EXISTS initiatives (
     titleEn TEXT DEFAULT NULL, 
     descFi TEXT DEFAULT NULL,
     descEn TEXT DEFAULT NULL,
-    status CHAR(16) NOT NULL DEFAULT 'submitted'
+    status CHAR(16) NOT NULL DEFAULT 'submitted',
+    signCount INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS initiativeChoices (
     userId INTEGER NOT NULL REFERENCES users (id),
@@ -84,7 +86,7 @@ CREATE TABLE IF NOT EXISTS initiativeChoices (
 CREATE TABLE IF NOT EXISTS sentMessages (
     chatId INTEGER NOT NULL,
     messageId INTEGER NOT NULL,
-    userId INTEGER NOT NULL REFERENCES users (id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    userId INTEGER DEFAULT NULL REFERENCES users (id) ON DELETE RESTRICT ON UPDATE CASCADE,
     pollId INTEGER DEFAULT NULL REFERENCES polls (id) ON DELETE RESTRICT ON UPDATE CASCADE,
     initiativeId INTEGER DEFAULT NULL REFERENCES initiatives (id) ON DELETE RESTRICT ON UPDATE CASCADE,
     language CHAR(2) NOT NULL,
@@ -100,14 +102,43 @@ db.commit()
 class DbUser(TypedDict):
     id: int
     passcode: str
-    tgUserId: int
+    tgUserId: int | None
+    tgDisplayName: str | None
+    tgUsername: str | None
     name: str
     area: str
-    candidateNumber: int
+    candidateNumber: int | None
     present: bool
-    language: str
+    language: str | None
     initiativeNotifs: bool
-    initiativeBanUntil: str
+    initiativeBanUntil: float | None
+
+
+class DbPoll(TypedDict):
+    id: int
+    textFi: str
+    textEn: str
+    status: PollState
+    type: Literal["question"] | Literal["election"]
+    voterGroup: str
+    sourceGroup: str
+    perArea: bool
+    updatedAt: str
+
+
+class DbInitiative(TypedDict):
+    id: int
+    userId: int
+    createdAt: str
+    userName: str
+    userLanguage: str | None
+    userTgId: int | None
+    titleFi: str
+    titleEn: str
+    descFi: str
+    descEn: str
+    status: InitiativeState
+    signCount: int
 
 
 def get_kv(key: str, default: Any):

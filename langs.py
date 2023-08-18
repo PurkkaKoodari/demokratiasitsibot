@@ -56,8 +56,16 @@ class Locale(TypedDict):
     init_in_review: str
     init_banned: str
     init_notif: str
+    init_view: str
     init_second: str
+    init_pass: str
+    init_second_confirm: str
+    init_second_confirm_yes: str
+    init_second_confirm_no: str
     init_seconded: str
+    init_closed: str
+    init_no_more: str
+    init_no_more_notifs: str
     init_broken: str
 
 
@@ -105,13 +113,21 @@ locale: dict[str, Locale] = {
         "init_sent": "Kiitos kansalaisaloitteestasi! Aloite on nyt tarkastettavana \u2013 saat tiedon kun se on käsitelty.",
         "init_canceled": "Kansalaisaloitteen luonti lopetettu.",
         "init_published": "Kansalaisaloitteesi <b>{title}</b> on julkaistu! Jos riittävän monta kansalaista kannattaa aloitettasi, se tulee äänestykseen.",
-        "init_unconstitutional": "Kansalaisaloitteesi <b>{title}</b> todettiin perustuslain vastaiseksi (= hyvä idea sinänsä, mutta ei toteutettavissa). Voit luoda uuden kansalaisaloitteen, mutta älä lähetä samaa asiaa uudestaan ilman muutoksia.",
+        "init_unconstitutional": "Kansalaisaloitteesi <b>{title}</b> todettiin perustuslain vastaiseksi (= hyvä idea sinänsä, mutta ei toteutettavissa). Voit luoda uuden kansalaisaloitteen, mutta älä lähetä samaa asiaa uudestaan liian pienin muutoksin.",
         "init_shitpost": "Kansalaisaloitteesi <b>{title}</b> todettiin paskapostaukseksi. {ban}",
         "init_in_review": "Edellinen kansalaisaloitteesi on vielä tarkastuksessa.",
         "init_banned": "Kansalaisaloitteiden luonti on estetty sinulta {mins} minuutin ajaksi.",
         "init_notif": "Uusi kansalaisaloite käyttäjältä {user}!\n\n<b>{title}</b>\n\n{desc}",
+        "init_view": "Kansalaisaloite käyttäjältä {user}:\n\n<b>{title}</b>\n\n{desc}",
         "init_second": "Kannata aloitetta",
+        "init_pass": "Seuraava aloite",
+        "init_second_confirm": "Haluatko varmasti kannattaa tätä aloitetta?",
+        "init_second_confirm_yes": "Kyllä, kannnata!",
+        "init_second_confirm_no": "Eiku",
         "init_seconded": "Kannatit tätä aloitetta.",
+        "init_closed": "Tämä aloite ei enää kerää allekirjoituksia.",
+        "init_no_more": "Ei kansalaisaloitteita tällä hetkellä.",
+        "init_no_more_notifs": " Komennolla /ailmoitukset voit saada ilmoituksen uusien kansalaisaloitteiden julkaisusta.",
         "init_broken": "Luo uusi aloite komennolla /initiative.",
     },
     "en": {
@@ -157,13 +173,21 @@ locale: dict[str, Locale] = {
         "init_sent": "Thank you for your initiative! It's now in review \u2013 we'll inform you when it's ready.",
         "init_canceled": "Initiative creation cancelled.",
         "init_published": "Your initiative <b>{title}</b> was just published! If enough people second it, it will be voted on.",
-        "init_unconstitutional": "Your initiative <b>{title}</b> was deemed unconstitutional (= good idea, but won't/can't be implemented). You may create another one, but don't repeat the same thing without changes.",
+        "init_unconstitutional": "Your initiative <b>{title}</b> was deemed unconstitutional (= good idea, but won't/can't be implemented). You may create another one, but don't repeat the same thing without enough changes.",
         "init_shitpost": "Your initiative <b>{title}</b> was deemed to be a shitpost. {ban}",
         "init_in_review": "Your previous initiative is still in review.",
         "init_banned": "You have been banned from creating initiatives for {mins} minutes.",
         "init_notif": "New citizen's initiative by {user}!\n\n<b>{title}</b>\n\n{desc}",
-        "init_second": "Second initiative",
+        "init_view": "Citizen's initiative by {user}:\n\n<b>{title}</b>\n\n{desc}",
+        "init_second": "Sign initiative",
+        "init_pass": "Next initiative",
+        "init_second_confirm": "Are you sure you want to sign this initiative?",
+        "init_second_confirm_yes": "Yes, sign!",
+        "init_second_confirm_no": "No, cancel",
         "init_seconded": "You have seconded this initiative.",
+        "init_closed": "This initiative is no longer taking signatures.",
+        "init_no_more": "No more initiatives.",
+        "init_no_more_notifs": " Send /inotifications to receive notifications of new initiatives.",
         "init_broken": "Create a new initiative with the command /initiative.",
     },
 }
